@@ -55,6 +55,19 @@
       </template>
     </template>
 
+    <!-- Leftmost "action" column — render-only pass-through for parents
+         that want per-row launcher buttons (e.g. HomePage workflows
+         table: "Open in code" / "Open in visual"). Other tables that
+         declare the same column name just get an empty cell, which is
+         the historic behaviour — this slot is opt-in. Different name
+         from "actions" (plural, on the right) so the two stay clearly
+         distinct. -->
+    <template v-slot:body-cell-action="props">
+      <q-td :props="props" auto-width>
+        <slot name="row-action" :row="props.row" />
+      </q-td>
+    </template>
+
     <!-- Name column — primary clickable label that opens the row editor.
          Triggers / Workflows / Configurations use a "name" column;
          Agents use "title"; Executions reuse "name" with the field

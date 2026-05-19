@@ -38,7 +38,12 @@ const routes = [
   // onto a page where every save will 403.
   { path: "/",                       component: HomePage },
   { path: "/test",                   component: PropertyEditor },
-  { path: "/flowDesigner/:id",       component: FlowDesigner,
+  // Visual mode (canvas) and code mode (JSON editor) are two separate
+  // top-level views — they never render side-by-side, so they don't fight
+  // over a shared model. The :mode segment is optional; when missing,
+  // FlowDesigner reads the user's localStorage preference and replaces
+  // the URL so bookmarks land on the same mode next time.
+  { path: "/flowDesigner/:id/:mode(visual|code)?", component: FlowDesigner,
     meta: { roles: ["admin", "editor"] } },
   { path: "/triggerDesigner/:id",    component: TriggerDesigner,
     meta: { roles: ["admin", "editor"] } },

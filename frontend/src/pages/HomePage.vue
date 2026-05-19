@@ -84,7 +84,12 @@
           <div class="text-caption text-grey-7">{{ activeSubtitle }}</div>
         </div>
 
-        <!-- Workflows ──────────────────────────────────────────────── -->
+        <!-- Workflows ────────────────────────────────────────────────
+             Two extra launcher buttons per row — code mode and visual
+             mode — flow through the leftmost "action" column via the
+             `row-action` slot. Row click (the name cell) still calls
+             onEditWorkflow, which now respects the saved per-workflow
+             mode preference in localStorage. -->
         <AppTable
           v-if="activeKey === 'workflows'"
           :rows="wf_rows"
@@ -97,7 +102,24 @@
           @refresh="reload"
           @export="onExportWorkflows"
           @import="onImportWorkflows"
-        />
+        >
+          <template #row-action="{ row }">
+            <q-btn
+              flat dense round size="sm"
+              icon="code"
+              @click.stop="onOpenFlow(row, 'code')"
+            >
+              <q-tooltip>Open in code mode</q-tooltip>
+            </q-btn>
+            <q-btn
+              flat dense round size="sm"
+              icon="schema"
+              @click.stop="onOpenFlow(row, 'visual')"
+            >
+              <q-tooltip>Open in visual mode</q-tooltip>
+            </q-btn>
+          </template>
+        </AppTable>
 
         <!-- Triggers ───────────────────────────────────────────────────
              Unified view: lists every trigger (running or stopped) and
@@ -199,6 +221,7 @@ import PluginsPage from "./PluginsPage.vue"
 // File picker + download helpers — same utilities the FlowDesigner
 // uses for its single-flow Import/Export buttons.
 import { downloadText, pickFileAsText } from "../components/flow/flowModel.js";
+import { getFlowMode, setFlowMode, clearFlowMode } from "../components/flow/flowMode.js";
 const router = useRouter();
 const route  = useRoute();
 const $q     = useQuasar();
@@ -482,23 +505,44 @@ onMounted(reload);
 // users keep several open at once. Everything else stays in-page.
 // ──────────────────────────────────────────────────────────────────────
 function onAddWorkflow() {
-  router.push({ path: `/flowDesigner/new` });
-  //window.open("/flowDesigner/new", "_blank", "noopener");
+  // New flows always start in visual mode (the friendlier first
+  // impression). The user can switch via the toolbar toggle once the
+  // flow is saved.
+  router.push({ path: `/flowDesigner/new/visual` });
 }
 function onEditWorkflow(row) {
-    router.push({ path: `/flowDesigner/${row.id}` });
-  //window.open(`/flowDesigner/${row.id}`, "_blank", "noopener");
+  // Row click respects the user's saved per-workflow preference.
+  // Defaults to visual when nothing's stored (see flowMode.js).
+  const mode = getFlowMode(row.id);
+  router.push({ path: `/flowDesigner/${row.id}/${mode}` });
+}
+// Explicit launcher buttons in the leftmost cell. Clicking either one
+// also updates the saved preference so future row clicks land in the
+// same mode without needing the button again.
+function onOpenFlow(row, mode) {
+  setFlowMode(row.id, mode);
+  router.push({ path: `/flowDesigner/${row.id}/${mode}` });
 }
 async function onDeleteWorkflow(row) {
   if (!await confirm(`Delete workflow "${row.name}"?`)) return;
-  try { await Graphs.remove(row.id); notify(`Deleted "${row.name}"`, "positive"); await reload(); }
+  try {
+    await Graphs.remove(row.id);
+    // Drop the orphaned mode preference so we don't accumulate
+    // localStorage cruft for long-gone workflows.
+    clearFlowMode(row.id);
+    notify(`Deleted "${row.name}"`, "positive");
+    await reload();
+  }
   catch (e) { notify(`Delete failed: ${errMsg(e)}`, "negative"); }
 }
 async function onDeleteSelectedWorkflows(rows) {
   if (!rows?.length) return;
   if (!await confirm(`Delete ${rows.length} workflow(s)?`)) return;
   let failed = 0;
-  for (const r of rows) { try { await Graphs.remove(r.id); } catch { failed++; } }
+  for (const r of rows) {
+    try { await Graphs.remove(r.id); clearFlowMode(r.id); }
+    catch { failed++; }
+  }
   notify(failed ? `Deleted ${rows.length - failed} of ${rows.length} (${failed} failed)`
                 : `Deleted ${rows.length} workflow(s)`, failed ? "warning" : "positive");
   await reload();

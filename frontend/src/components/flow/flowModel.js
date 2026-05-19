@@ -202,6 +202,60 @@ export function downloadText(filename, text, mime = "application/json") {
   URL.revokeObjectURL(url);
 }
 
+/**
+ * Compute auto-layout positions for nodes that have no entry in
+ * `existingPositions`. Surviving nodes keep their user-tuned coordinates;
+ * dagre runs over the whole graph but only its output for newly-added
+ * ("orphan") nodes is adopted. This is the merge used by the code editor
+ * when saving — code-mode users never touch positions directly, so we
+ * fill them in here.
+ *
+ * Lives in flowModel.js (not useLayout.js) because this is a pure-data
+ * helper — no VueFlow ids, no DOM. Callers pass the normalised model
+ * keyed by node NAME and get positions keyed by node NAME back.
+ *
+ * @param {object} model  normalised flow model — nodes/edges by name
+ * @param {object} existingPositions  { [nodeName]: { x, y } }
+ * @returns {object}  merged positions keyed by node name
+ */
+export async function mergePositionsWithLayout(model, existingPositions = {}) {
+  const out = {};
+  // Phase 1: carry over surviving positions.
+  const existing = existingPositions || {};
+  const live = new Set((model.nodes || []).map(n => n.name));
+  for (const name of live) {
+    const p = existing[name];
+    if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+      out[name] = { x: p.x, y: p.y };
+    }
+  }
+  // Phase 2: orphans get coords from a fresh dagre layout.
+  const orphans = (model.nodes || []).filter(n => !out[n.name]);
+  if (!orphans.length) return out;
+
+  // Dynamic import keeps dagre out of the critical-path bundle for
+  // callers that don't ever hit the merge (visual-mode users).
+  const dagre = (await import("dagre")).default;
+  const g = new dagre.graphlib.Graph();
+  g.setDefaultEdgeLabel(() => ({}));
+  g.setGraph({ rankdir: "TB", nodesep: 50, ranksep: 80 });
+  for (const n of model.nodes || []) {
+    g.setNode(n.name, { width: 170, height: 60 });
+  }
+  for (const e of model.edges || []) {
+    if (e && e.from && e.to) g.setEdge(e.from, e.to);
+  }
+  dagre.layout(g);
+  for (const n of orphans) {
+    const node = g.node(n.name);
+    if (node && Number.isFinite(node.x) && Number.isFinite(node.y)) {
+      // Match useLayout's centre→origin shift (170×60 box).
+      out[n.name] = { x: node.x - 85, y: node.y - 30 };
+    }
+  }
+  return out;
+}
+
 /** Read a single user-selected file as text. Returns a Promise<string>. */
 export function pickFileAsText(accept = ".json,.txt") {
   return new Promise((resolve, reject) => {

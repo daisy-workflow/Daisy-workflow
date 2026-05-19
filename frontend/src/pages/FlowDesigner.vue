@@ -70,6 +70,13 @@
                 </q-btn>
             </q-toolbar>
 
+            <!-- Tabs differ by mode:
+                   visual mode: Canvas (editable) + JSON (read-only viewer)
+                   code mode:   DSL    (editable) + JSON (read-only viewer)
+                 No in-editor mode switch — to flip modes the user goes
+                 back to HomePage and clicks the other launcher button.
+                 That avoids the "did my edits survive the switch?"
+                 confusion entirely. -->
             <q-tabs
                 v-model="tab"
                 dense align="left" no-caps
@@ -79,7 +86,8 @@
             >
                 <q-tab name="prompt"   label="Prompt" />
                 <q-tab name="overview" label="Overview" />
-                <q-tab name="canvas"   label="Flow editor" />
+                <q-tab v-if="mode === 'visual'" name="canvas" label="Flow editor" />
+                <q-tab v-else                   name="dsl"    label="DSL editor" />
                 <q-tab name="json"     label="JSON" />
             </q-tabs>
         </q-header>
@@ -102,9 +110,21 @@
                     <q-tab-panel name="overview" class="q-pa-none">
                         <OverviewTab v-model="model" />
                     </q-tab-panel>
-                    <q-tab-panel name="canvas" class="q-pa-none">
+                    <!-- Only the editor for the current mode is mounted.
+                         No CanvasTab in code mode, no DslEditorTab in
+                         visual mode — that's how we get rid of the live
+                         sync bugs that motivated this split. -->
+                    <q-tab-panel v-if="mode === 'visual'" name="canvas" class="q-pa-none">
                         <CanvasTab v-model="model" :plugins="plugins" />
                     </q-tab-panel>
+                    <q-tab-panel v-else name="dsl" class="q-pa-none">
+                        <DslEditorTab ref="codeEditorRef" v-model="model" :plugins="plugins" />
+                    </q-tab-panel>
+                    <!-- JSON viewer — read-only in BOTH modes. Lets a
+                         power user verify exactly what will be sent to
+                         the server, including the non-DSL fields (retry,
+                         retryDelay, meta.positions, etc.) that aren't
+                         visible in the DSL surface. -->
                     <q-tab-panel name="json" class="q-pa-none">
                         <JsonTab v-model="model" />
                     </q-tab-panel>
@@ -177,6 +197,7 @@ import { Graphs, Plugins } from "../api/client";
 import PromptTab from "../components/flow/PromptTab.vue";
 import OverviewTab from "../components/flow/OverviewTab.vue";
 import CanvasTab from "../components/flow/CanvasTab.vue";
+import DslEditorTab from "../components/flow/DslEditorTab.vue";
 import JsonTab from "../components/flow/JsonTab.vue";
 import RunDialog from "../components/RunDialog.vue";
 import {
@@ -186,6 +207,7 @@ import {
     pickFileAsText,
     downloadText,
 } from "../components/flow/flowModel.js";
+import { getFlowMode, setFlowMode } from "../components/flow/flowMode.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -193,11 +215,33 @@ const $q = useQuasar();
 
 const isNew = computed(() => route.params.id === "new" || !route.params.id);
 
-const tab = ref("overview");          // start on Overview when editing existing flow
+// Mode is part of the URL. The router declares /:mode(visual|code)? —
+// when missing we fall back to the saved per-workflow preference (or
+// "visual" if none) and replace the URL so bookmarks survive. There's
+// no in-editor mode toggle: once you're in a mode you stay until you
+// navigate back to the HomePage and pick the other launcher.
+const mode = computed(() => {
+    const m = route.params.mode;
+    return m === "code" ? "code" : "visual";
+});
+
+// Default tab depends on mode:
+//   - visual mode: start on Overview (or Prompt for new flows)
+//   - code mode:   start on the code editor — the user opted in
+//
+// The active tab also has to follow mode changes (the visual mode's
+// "canvas" tab and code mode's "code" tab are different names), so a
+// watch below resets `tab` whenever mode flips.
+const tab = ref("overview");
 const loading = ref(true);
 const saving = ref(false);
 const loadError = ref("");
 const dirty = ref(false);
+
+// Ref to the mounted DslEditorTab so we can flush in-progress text on
+// save. Visual mode leaves this null. The editor exposes applyBuffer()
+// via defineExpose — see DslEditorTab.vue.
+const codeEditorRef = ref(null);
 
 const model = ref(emptyModel());
 const plugins = ref([]);
@@ -232,12 +276,32 @@ onMounted(async () => {
     // Plugins (for the canvas palette + property panel autocomplete).
     Plugins.list().then(list => { plugins.value = list || []; }).catch(() => { });
 
+    // Normalise the URL so it always carries the current mode.
+    // Bookmarks of /flowDesigner/:id (no mode) bounce through the saved
+    // preference. New flows always start in visual mode — no preference
+    // for "new" — but we still want /flowDesigner/new/visual in the URL
+    // so a refresh stays here.
+    if (!route.params.mode) {
+        const pref = isNew.value ? "visual" : getFlowMode(route.params.id);
+        router.replace({
+            path: `/flowDesigner/${route.params.id || "new"}/${pref}`,
+            query: route.query,
+        });
+    }
+
+    // Default tab depends on mode + new-vs-existing.
     if (isNew.value) {
-        tab.value = "prompt";              // new flows start on the AI prompt tab
+        // New flow: prompt-first UX in either mode.
+        tab.value = "prompt";
         lastSavedDsl = serializeModelToDsl(model.value);
         loading.value = false;
         return;
     }
+    // Existing flow: drop into the primary editor for the current mode.
+    // Code mode → DSL editor; visual mode → Overview (one click from
+    // the canvas, but lets users glance at the workflow shape first).
+    tab.value = mode.value === "code" ? "dsl" : "overview";
+
     try {
         const g = await Graphs.get(route.params.id);
         model.value = parseDslToModel(g.dsl);
@@ -249,6 +313,16 @@ onMounted(async () => {
     }
 });
 
+// Mode rarely changes mid-session (no in-editor toggle) but it can
+// happen when the user navigates from /flowDesigner/:id/visual to
+// /flowDesigner/:id/code via a fresh URL paste. Keep `tab` valid for
+// the new mode — otherwise the previously-selected tab name wouldn't
+// match any rendered panel.
+watch(mode, (m) => {
+    if (m === "code"   && tab.value === "canvas") tab.value = "dsl";
+    if (m === "visual" && tab.value === "dsl")    tab.value = "canvas";
+});
+
 // Track whether the model has diverged from the last saved version.
 watch(model, (m) => {
     try { dirty.value = serializeModelToDsl(m) !== lastSavedDsl; }
@@ -256,7 +330,20 @@ watch(model, (m) => {
 }, { deep: true });
 
 // ----- toolbar -----
+//
+// No in-editor mode toggle by design — see the toolbar template above
+// for the rationale. To open this workflow in the other mode, the user
+// goes back to HomePage and clicks the launcher button.
+
 async function onSave() {
+    // In code mode the textarea may still hold un-applied text. Flush
+    // it to the model before serialising — otherwise a Ctrl+S while
+    // typing would persist a stale model. Visual mode doesn't need
+    // this because CanvasTab commits node/edge changes synchronously.
+    if (codeEditorRef.value?.applyBuffer) {
+        try { await codeEditorRef.value.applyBuffer({ quiet: true }); }
+        catch { /* parse error already surfaced in the editor */ }
+    }
     saving.value = true;
     try {
         const dsl = serializeModelToDsl(model.value);
@@ -277,7 +364,12 @@ async function onSave() {
         dirty.value = false;
         $q.notify({ type: "positive", message: `Saved "${saved.name}"`, position: "bottom" });
         // ID is stable for updates; only navigate after a successful create.
-        if (isNew.value) router.replace({ path: `/flowDesigner/${saved.id}` });
+        // Preserve the current mode in the new URL so we don't kick the
+        // user back to visual mode after a code-mode "first save".
+        if (isNew.value) {
+            setFlowMode(saved.id, mode.value);
+            router.replace({ path: `/flowDesigner/${saved.id}/${mode.value}` });
+        }
     } catch (e) {
         $q.notify({ type: "negative", message: `Save failed: ${e.message}`, position: "bottom" });
     } finally {
@@ -513,7 +605,14 @@ function onExport() {
     downloadText(`${safeName}.json`, dsl, "application/json");
 }
 
-function goBack() {
+async function goBack() {
+    // Code editor edits aren't reflected in `model.value` until applyBuffer
+    // runs (on blur or explicit Apply). Flush before checking dirty so the
+    // user gets an accurate "are there unsaved changes?" gate.
+    if (codeEditorRef.value?.applyBuffer) {
+        try { await codeEditorRef.value.applyBuffer({ quiet: true }); }
+        catch { /* parse error already surfaced */ }
+    }
     if (dirty.value) {
         $q.dialog({
             title: "Unsaved changes",
