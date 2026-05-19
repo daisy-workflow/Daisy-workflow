@@ -122,6 +122,29 @@
     </template>
    
 
+    <!-- Tags column — recognised by name, like `name`/`title`/`id` above.
+         Renders each entry of the row's `tags` array as a clickable
+         q-chip. Click emits `tag-click` upward so the parent can toggle
+         a filter (no built-in filtering — parent owns that state, same
+         pattern as @edit/@delete). Empty cell shows an em-dash so the
+         column isn't suspiciously blank. -->
+    <template v-slot:body-cell-tags="props">
+      <q-td :props="props">
+        <template v-if="Array.isArray(props.value) && props.value.length">
+          <q-chip
+            v-for="t in props.value" :key="t"
+            dense square size="11px"
+            class="q-mr-xs cursor-pointer"
+            clickable
+            @click.stop="emit('tag-click', t)"
+          >
+            {{ t }}
+          </q-chip>
+        </template>
+        <span v-else class="text-grey-5">—</span>
+      </q-td>
+    </template>
+
     <!-- Actions Column — read-only tables still get the `row-actions`
          slot, so callers (e.g. HomePage "Running triggers") can drop
          in Run / Stop buttons that don't fit the Edit/Delete menu.
@@ -224,6 +247,10 @@ const emit = defineEmits([
   // parent opens its own file picker.
   "import",
   "export",
+  // Fires when the user clicks a tag chip in any column named "tags".
+  // The parent decides what to do — typically toggle the chip into a
+  // filter list. Payload is the tag string.
+  "tag-click",
 ]);
 
 const selected = ref([]);

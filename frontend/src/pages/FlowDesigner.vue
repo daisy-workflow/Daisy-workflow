@@ -327,13 +327,18 @@ async function onRunClick() {
     runDialogOpen.value = true;
 }
 
-async function onRunSubmit(input) {
+async function onRunSubmit(payload) {
+    // RunDialog now emits { context, tags }. Pre-tags callers passed
+    // the bare context object — preserve that for any other dialog
+    // that still emits the legacy shape.
+    const context = (payload && payload.context !== undefined) ? payload.context : (payload || {});
+    const tags    = (payload && Array.isArray(payload.tags))   ? payload.tags    : [];
     runDialogOpen.value = false;
     if (!route.params.id || isNew.value) return;
     running.value = true;
     try {
-        const result = await Graphs.execute(route.params.id, input);
-        lastRunInput.value = input || {};
+        const result = await Graphs.execute(route.params.id, context, tags);
+        lastRunInput.value = context || {};
         $q.notify({
             type: "positive",
             message: `Execution queued (${(result.executionId || "").slice(0, 8)}…)`,

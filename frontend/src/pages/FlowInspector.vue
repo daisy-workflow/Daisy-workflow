@@ -84,6 +84,21 @@
                                 style="min-width: 140px;"
                                 class="q-mr-md"
                             />
+                            <!-- Tag filter — chip-style with type-to-add,
+                                 same shape as the RunDialog input. Multi-tag
+                                 entries use overlap semantics (rows match
+                                 when ANY tag is present). -->
+                            <q-select
+                                v-model="tagFilter"
+                                dense outlined
+                                use-input use-chips multiple hide-dropdown-icon
+                                input-debounce="0"
+                                new-value-mode="add-unique"
+                                :options="[]"
+                                label="Tags"
+                                style="min-width: 180px;"
+                                class="q-mr-md"
+                            />
                             <q-input v-model="execFilter" borderless dense debounce="200" placeholder="Search">
                                 <template v-slot:append><q-icon name="search" /></template>
                             </q-input>
@@ -103,6 +118,27 @@
                                 <span class="status-pill" :class="`status-${props.row.status}`">
                                     {{ props.row.status }}
                                 </span>
+                            </q-td>
+                        </template>
+
+                        <!-- Tag chips. Click → seed the tagFilter so the user
+                             can pivot from one execution into "show me all
+                             others with this tag". em-dash when empty so the
+                             cell isn't suspiciously blank. -->
+                        <template v-slot:body-cell-tags="props">
+                            <q-td :props="props">
+                                <template v-if="(props.row.tags || []).length">
+                                    <q-chip
+                                        v-for="t in props.row.tags" :key="t"
+                                        dense square size="11px"
+                                        class="q-mr-xs cursor-pointer"
+                                        clickable
+                                        @click.stop="onTagChipClick(t)"
+                                    >
+                                        {{ t }}
+                                    </q-chip>
+                                </template>
+                                <span v-else class="text-grey-5">—</span>
                             </q-td>
                         </template>
 
@@ -229,6 +265,25 @@ const statusFilter = ref((() => {
     } catch { /* ignore */ }
     return "all";
 })());
+
+// Tag filter — list of tags the user wants to keep visible. Empty array
+// means "no tag filter". Multi-tag entries use OR semantics (overlap).
+// Persisted to localStorage so it survives reloads, same as statusFilter.
+const tagFilter = ref((() => {
+    try {
+        const saved = JSON.parse(localStorage.getItem("flowInspector.tagFilter") || "[]");
+        return Array.isArray(saved) ? saved : [];
+    } catch { return []; }
+})());
+
+// Clicking a tag chip in the table seeds the filter with that tag (or
+// removes it on second click — toggling matches the user's mental model
+// of "filter by this / now don't").
+function onTagChipClick(tag) {
+    const i = tagFilter.value.indexOf(tag);
+    if (i >= 0) tagFilter.value.splice(i, 1);
+    else        tagFilter.value.push(tag);
+}
 // Per-trigger busy flag so flipping one button doesn't disable the others.
 const busy = reactive({});
 // Per-execution busy flag while a delete is in flight.
@@ -282,12 +337,15 @@ const exec_columns = [
          style: "width: 90px;"
     },
     { name: "status", label: "Status", field: "status", align: "left", style: "width: 90px;" },
+    // Tags column — chips rendered via a body-cell slot below so the
+    // template can iterate row.tags into individual q-chip elements.
+    { name: "tags", label: "Tags", field: row => row.tags || [], align: "left", style: "max-width: 220px;" },
     {
         name: "started", label: "Started", align: "left",
         field: row => row.started_at || row.created_at,
         format: v => v ? new Date(v).toLocaleString() : "—",
     },
-    
+
     { name: "actions", label: "", align: "right", style: "width: 90px;" },
 ];
 
@@ -314,10 +372,17 @@ function statusMatches(filter, status) {
 const filteredExecRows = computed(() => {
     const q = execFilter.value.toLowerCase();
     const f = statusFilter.value;
+    // Overlap semantics for tags — a row matches when ANY selected tag
+    // is present on the row. Empty filter means "no tag filter".
+    const wantedTags = (tagFilter.value || []).map(t => String(t).toLowerCase());
     return exec_rows.value.filter(r => {
         if (!statusMatches(f, r.status)) return false;
+        if (wantedTags.length) {
+            const rowTags = (r.tags || []).map(t => String(t).toLowerCase());
+            if (!wantedTags.some(t => rowTags.includes(t))) return false;
+        }
         if (!q) return true;
-        const haystack = `${r.status} ${formatGraph(r)} ${r.id || ""}`.toLowerCase();
+        const haystack = `${r.status} ${formatGraph(r)} ${r.id || ""} ${(r.tags || []).join(" ")}`.toLowerCase();
         return haystack.includes(q);
     });
 });
@@ -355,6 +420,14 @@ watch(statusFilter, (v) => {
     catch { /* private mode — ignore */ }
 });
 
+// Same shape for the tag-filter chips. JSON-serialised because it's
+// an array; we don't bother with versioning since the contents are
+// just strings.
+watch(tagFilter, (v) => {
+    try { localStorage.setItem("flowInspector.tagFilter", JSON.stringify(v || [])); }
+    catch { /* ignore */ }
+}, { deep: true });
+
 // Persist rows-per-page changes (but not the current page index — every
 // fresh visit should land on page 1).
 watch(() => execPagination.value.rowsPerPage, (n) => {
@@ -369,7 +442,7 @@ watch(() => triggerPagination.value.rowsPerPage, (n) => {
 // When the active filter narrows the result set, snap back to page 1 so
 // the user isn't stranded on an empty page (e.g. they were on page 5 of
 // "All" and switched to "Failed" with only 3 rows).
-watch([statusFilter, execFilter], () => { execPagination.value.page = 1; });
+watch([statusFilter, execFilter, tagFilter], () => { execPagination.value.page = 1; }, { deep: true });
 watch(triggerFilter, () => { triggerPagination.value.page = 1; });
 
 // ── Helpers ────────────────────────────────────────────────────────────────

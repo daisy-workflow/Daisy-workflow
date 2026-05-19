@@ -64,7 +64,11 @@ export const Graphs = {
   update:   (id, dsl) => api.put(`/graphs/${id}`, { dsl }).then(r => r.data),
   remove:   (id) => api.delete(`/graphs/${id}`).then(r => r.data),
   validate: (dsl) => api.post("/graphs/validate", { dsl }).then(r => r.data),
-  execute:  (id, context = {}) => api.post(`/graphs/${id}/execute`, { context }).then(r => r.data),
+  // `tags` are stamped onto the executions.tags row so the user can
+  // filter the Instances table by them later. Backend normalises
+  // (trim/lower/dedupe), so any shape is fine to send.
+  execute:  (id, context = {}, tags = []) =>
+    api.post(`/graphs/${id}/execute`, { context, tags }).then(r => r.data),
 
   // Archives — explicit snapshots of the live workflow.
   archive:    (id, reason) => api.post(`/graphs/${id}/archives`, { reason }).then(r => r.data),
@@ -75,12 +79,17 @@ export const Graphs = {
 };
 
 export const Executions = {
-  // Optional filters: { graphId, status (CSV: "running,queued"), limit }.
+  // Optional filters: { graphId, status (CSV: "running,queued"),
+  // tags (CSV or array), limit }.
   // Legacy callers pass a bare graphId string — still supported.
   list: (filterOrGraphId) => {
     const params = (typeof filterOrGraphId === "string" || filterOrGraphId == null)
       ? (filterOrGraphId ? { graphId: filterOrGraphId } : {})
-      : filterOrGraphId;
+      : { ...filterOrGraphId };
+    // Backend's tag parser expects CSV. Accept arrays at the call site
+    // for ergonomics and stringify here so axios doesn't emit
+    // `?tags[]=a&tags[]=b` (which the parser doesn't understand).
+    if (Array.isArray(params.tags)) params.tags = params.tags.join(",");
     return api.get("/executions", { params }).then(r => r.data);
   },
   get:    (id) => api.get(`/executions/${id}`).then(r => r.data),

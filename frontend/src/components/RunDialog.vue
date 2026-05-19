@@ -5,9 +5,21 @@ const props = defineProps({
   modelValue: { type: Boolean, default: false },
   initial: { type: Object, default: () => ({}) },
 });
+// submit now carries both the parsed input context AND any tags the
+// user typed in. Caller signature: handler({ context, tags }).
 const emit = defineEmits(["update:modelValue", "submit"]);
 
 const text = ref("{}");
+// q-select with new-value-mode="add-unique" lets the user type a tag
+// and press Enter to chip-ify it. Backend normalises (trim/lower/dedupe)
+// so we don't need to enforce anything here.
+const tags = ref([]);
+// Mirror the q-select's in-flight input buffer via @input-value. We
+// commit it as a tag on submit so a user who types and clicks Run
+// without pressing Enter doesn't silently lose the text. Pure-JS
+// approach — doesn't depend on calling q-select's internal add()
+// which has been flaky across Quasar minor versions.
+const tagInputBuffer = ref("");
 
 const parsed = computed(() => {
   try { return { ok: true, value: JSON.parse(text.value || "{}") }; }
@@ -15,13 +27,22 @@ const parsed = computed(() => {
 });
 
 watch(() => props.modelValue, (open) => {
-  if (open) text.value = JSON.stringify(props.initial || {}, null, 2);
+  if (open) {
+    text.value           = JSON.stringify(props.initial || {}, null, 2);
+    tags.value           = [];   // start clean each open — tags are per-run, not sticky
+    tagInputBuffer.value = "";
+  }
 });
 
 function close() { emit("update:modelValue", false); }
 function submit() {
   if (!parsed.value.ok) return;
-  emit("submit", parsed.value.value);
+  // Pick up any in-flight text the user typed but didn't Enter on
+  // (the most common "tag didn't save" complaint). Dedupe by exact
+  // string match — backend will lower-case and re-dedupe anyway.
+  const buf = String(tagInputBuffer.value || "").trim();
+  if (buf && !tags.value.includes(buf)) tags.value.push(buf);
+  emit("submit", { context: parsed.value.value, tags: tags.value });
 }
 
 function onKeydown(e) {
@@ -64,6 +85,23 @@ function onKeydown(e) {
         <div v-if="parsed.ok" class="text-caption text-grey q-mt-xs">
           Valid JSON · {{ Array.isArray(parsed.value) ? parsed.value.length + ' item(s)' : Object.keys(parsed.value || {}).length + ' top-level keys' }}
         </div>
+
+        <!-- Tags input — chip-style q-select with type-to-add.
+             `new-value-mode="add-unique"` handles Enter-to-add natively;
+             empty-string and dedupe are taken care of by Quasar + the
+             backend's normalizeTags (which trims/lowercases/dedupes). -->
+        <q-select
+          v-model="tags"
+          dense outlined
+          use-input use-chips multiple hide-dropdown-icon
+          input-debounce="0"
+          new-value-mode="add-unique"
+          :options="[]"
+          class="q-mt-md"
+          label="Tags (optional)"
+          hint="Stamped onto this execution so you can filter the Instances list later. Press Enter after each tag, or just click Run."
+          @input-value="(v) => tagInputBuffer = v"
+        />
       </q-card-section>
 
       <q-card-actions align="right" class="q-pa-sm">

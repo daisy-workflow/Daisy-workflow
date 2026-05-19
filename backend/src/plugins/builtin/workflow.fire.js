@@ -24,6 +24,7 @@ import { v4 as uuid } from "uuid";
 import { pool } from "../../db/pool.js";
 import { enqueueExecution } from "../../queue/queue.js";
 import { assertIterationCap } from "../../engine/limits.js";
+import { normalizeTags } from "../../utils/tags.js";
 
 const MAX_DEPTH = 10;
 
@@ -55,6 +56,19 @@ export default {
         description:
           "Object passed as the child's run input. Becomes the child's " +
           "ctx.data root and is stored on its executions.inputs row.",
+      },
+      // String list, rendered as a chip-style list editor by the
+      // property panel (array<string> → ui_type "list"). Tags are
+      // stamped onto the child's executions.tags row so flows that
+      // fan out can group their children for later filtering.
+      tags: {
+        type: "array",
+        items: { type: "string" },
+        title: "Tags",
+        description:
+          "Optional tags to stamp on the spawned child execution. " +
+          "Useful for grouping fan-out children with a shared marker " +
+          "(e.g. [\"run-2026-05-18\", \"reprocess\"]).",
       },
     },
   },
@@ -130,10 +144,15 @@ export default {
     // fires from inside the child can keep enforcing depth + cycle limits.
     const childId    = uuid();
     const childInput = (input.input && typeof input.input === "object") ? input.input : {};
+    // Tags from this node's `tags` input are stamped on the child row.
+    // No parent-inheritance in v1 — if a fan-out wants to share a marker
+    // with its children, the author can write the tag into both the
+    // parent (Run dialog) and the workflow.fire input.
+    const childTags  = normalizeTags(input.tags);
     await pool.query(
-      `INSERT INTO executions (id, graph_id, status, inputs, context, workspace_id)
-       VALUES ($1,$2,'queued',$3,'{}'::jsonb,$4)`,
-      [childId, input.workflowId, JSON.stringify(childInput), childWorkspaceId],
+      `INSERT INTO executions (id, graph_id, status, inputs, context, workspace_id, tags)
+       VALUES ($1,$2,'queued',$3,'{}'::jsonb,$4,$5)`,
+      [childId, input.workflowId, JSON.stringify(childInput), childWorkspaceId, childTags],
     );
 
     // Build the new ancestors list. The current execution's graphId is

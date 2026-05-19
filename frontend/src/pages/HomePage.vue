@@ -149,18 +149,36 @@
           @delete-selected="onDeleteSelectedConfigs"
         />
 
-        <!-- Instances — every role sees the list; only admins can delete. -->
-        <AppTable
-          v-else-if="activeKey === 'instances'"
-          :rows="exec_rows"
-          :columns="exec_columns"
-          :title="isAdmin ? 'Instances' : 'Instances (read-only)'"
-          :read-only="!isAdmin"
-          @edit="onOpenInstance"
-          @delete="onDeleteInstance"
-          @delete-selected="onDeleteSelectedInstances"
-          @refresh="reload"
-        />
+        <!-- Instances — every role sees the list; only admins can delete.
+             A chip-style q-select sits above the table for filtering by
+             tag. Empty filter passes all rows. Click a chip in the table
+             body to toggle that tag in the filter (handled in script). -->
+        <template v-else-if="activeKey === 'instances'">
+          <div class="row items-center q-pa-sm q-pb-none">
+            <q-select
+              v-model="exec_tag_filter"
+              dense outlined
+              use-input use-chips multiple hide-dropdown-icon
+              input-debounce="0"
+              new-value-mode="add-unique"
+              :options="[]"
+              label="Filter by tags"
+              hint="OR semantics — rows pass when ANY listed tag is present."
+              style="min-width: 280px;"
+            />
+          </div>
+          <AppTable
+            :rows="exec_rows_filtered"
+            :columns="exec_columns"
+            :title="isAdmin ? 'Instances' : 'Instances (read-only)'"
+            :read-only="!isAdmin"
+            @edit="onOpenInstance"
+            @delete="onDeleteInstance"
+            @delete-selected="onDeleteSelectedInstances"
+            @refresh="reload"
+            @tag-click="onExecTagClick"
+          />
+        </template>
 
         <PluginsPage v-else-if="activeKey === 'plugin'"/>
       </q-page>
@@ -273,6 +291,42 @@ const config_rows  = ref([]);
 const agent_rows   = ref([]);
 const exec_rows    = ref([]);
 
+// Tag filter for the Instances table. Empty list means "no filter".
+// Persisted to localStorage so it survives reloads, same shape as
+// FlowInspector's tagFilter (overlap / OR semantics across selected
+// tags). Click a chip in the table to add it; click the chip again
+// in the filter input's x to remove it.
+const exec_tag_filter = ref((() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem("home.exec.tagFilter") || "[]");
+    return Array.isArray(saved) ? saved : [];
+  } catch { return []; }
+})());
+watch(exec_tag_filter, (v) => {
+  try { localStorage.setItem("home.exec.tagFilter", JSON.stringify(v || [])); }
+  catch { /* ignore */ }
+}, { deep: true });
+
+// Filtered view bound to AppTable. Overlap match — a row passes when
+// ANY of its tags overlaps the filter list. Empty filter passes all.
+const exec_rows_filtered = computed(() => {
+  if (!exec_tag_filter.value.length) return exec_rows.value;
+  const wanted = exec_tag_filter.value.map(t => String(t).toLowerCase());
+  return exec_rows.value.filter(r => {
+    const rowTags = (r.tags || []).map(t => String(t).toLowerCase());
+    return wanted.some(t => rowTags.includes(t));
+  });
+});
+
+// Click handler: toggle the clicked tag in/out of the filter list so
+// successive clicks on the same chip alternate between "filter by this"
+// and "stop filtering by this".
+function onExecTagClick(tag) {
+  const i = exec_tag_filter.value.indexOf(tag);
+  if (i >= 0) exec_tag_filter.value.splice(i, 1);
+  else        exec_tag_filter.value.push(tag);
+}
+
 // `running_rows` used to power a separate sidebar tab. The Triggers
 // view now subsumes that — its inline Start/Stop buttons + status
 // pill replace the need to filter triggers down to running ones.
@@ -381,6 +435,10 @@ const exec_columns = [
       ? `${Math.round((new Date(row.finished_at) - new Date(row.started_at)) / 1000)}s` : "—",
     align: "right", style: "width: 80px;",
   },
+  // Tags — AppTable has a built-in body-cell-tags renderer that turns
+  // this column's value (an array) into clickable chips, and emits
+  // `tag-click` upward when one is clicked.
+  { name: "tags", label: "Tags", field: row => row.tags || [], align: "left", style: "max-width: 220px;" },
   { name: "actions", label: "", align: "right", style: "width: 80px;" },
 ];
 
@@ -424,10 +482,12 @@ onMounted(reload);
 // users keep several open at once. Everything else stays in-page.
 // ──────────────────────────────────────────────────────────────────────
 function onAddWorkflow() {
-  window.open("/flowDesigner/new", "_blank", "noopener");
+  router.push({ path: `/flowDesigner/new` });
+  //window.open("/flowDesigner/new", "_blank", "noopener");
 }
 function onEditWorkflow(row) {
-  window.open(`/flowDesigner/${row.id}`, "_blank", "noopener");
+    router.push({ path: `/flowDesigner/${row.id}` });
+  //window.open(`/flowDesigner/${row.id}`, "_blank", "noopener");
 }
 async function onDeleteWorkflow(row) {
   if (!await confirm(`Delete workflow "${row.name}"?`)) return;

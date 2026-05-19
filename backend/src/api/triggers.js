@@ -140,6 +140,7 @@ router.post("/:id/fire", requireRole("admin", "editor"), async (req, res, next) 
       : {};
     const result = await fireTriggerById(req.params.id, {
       payload, workspaceId: req.user.workspaceId,
+      tags: req.body?.tags,           // forwarded; normalised inside manager.js
     });
     await auditLog({
       req, action: "trigger.fire",

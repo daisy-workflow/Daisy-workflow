@@ -13,6 +13,9 @@
 #   vivek13186/daisy-plugin-jira
 #   vivek13186/daisy-plugin-google-sheets
 #   vivek13186/daisy-plugin-microsoft-teams
+#   vivek13186/daisy-plugin-npm
+#   vivek13186/daisy-plugin-aws-s3
+#   vivek13186/daisy-plugin-s3
 #
 # Upgrades are `docker compose pull <svc> && docker compose up -d <svc>`.
 # Pin a tag in the image string below (`:0.2.0`, `:latest`, etc.) to
@@ -39,34 +42,6 @@
 # `http://daisy-jira:8080`.
 
 services:
-  reddit-plugin:
-    profiles: ["full"]
-    build:
-      # The SDK now ships on npm as `@daisy-workflow/plugin-sdk`,
-      # so plugin containers don't need the repo-root build context
-      # anymore. A plugin's own folder is enough for `npm install`
-      # to pull the SDK from the registry. Keep this `context: .`
-      # only if your Dockerfile still references files outside the
-      # plugin folder (e.g. a shared local copy of the SDK during
-      # SDK development).
-      context: .
-      dockerfile: plugins-external/reddit/Dockerfile
-    container_name: daisy-plugin-reddit
-    restart: unless-stopped
-    environment:
-      PORT: "8080"
-      REDDIT_USER_AGENT: "daisy-workflow/0.2 (+plugin reddit.search)"
-    # Internal-only by default. Uncomment to expose for browser
-    # testing on the host.
-    # ports:
-    #   - "8081:8080"
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
-      interval: 30s
-      timeout: 3s
-      retries: 3
-      start_period: 5s
-
   # ── Jira plugin ────────────────────────────────────────────────────
   # One container, one Daisy node. The action is selected per-node via the
   # `operation` input (issue.get / issue.create / issue.update / issue.delete
@@ -86,6 +61,9 @@ services:
     restart: unless-stopped
     environment:
       PORT: "8080"
+    # Host port mapping (off by default — uncomment for local curl/browser).
+    ports:
+       - "7006:8080"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 30s
@@ -113,6 +91,9 @@ services:
     restart: unless-stopped
     environment:
       PORT: "8080"
+    # Host port mapping (off by default — uncomment for local curl/browser).
+    ports:
+       - "7001:8080"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 30s
@@ -142,6 +123,9 @@ services:
     restart: unless-stopped
     environment:
       PORT: "8080"
+    # Host port mapping (off by default — uncomment for local curl/browser).
+    ports:
+       - "7002:8080"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 30s
@@ -166,6 +150,82 @@ services:
     restart: unless-stopped
     environment:
       PORT: "8080"
+    # Host port mapping (off by default — uncomment for local curl/browser).
+    ports:
+       - "7003:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # ── AWS S3 plugin ───────────────────────────────────────────────────
+  # One container, one Daisy node. The action is selected per-node via
+  # the `operation` input across 15 operations covering AWS-specific
+  # features:
+  #   bucket.getAll / bucket.create / bucket.delete / bucket.search /
+  #   bucket.location / file.getAll / file.head / file.upload /
+  #   file.download / file.copy / file.delete / file.presignedUrl /
+  #   folder.create / folder.getAll / folder.delete
+  #
+  # Brings AWS-specific knobs the generic `s3` plugin doesn't: storage
+  # classes, server-side encryption (SSE-S3 / SSE-KMS), object tagging,
+  # requester pays, presigned URLs, and region-derived endpoints.
+  #
+  # Auth: workspace `generic` config (default name "aws-s3") with
+  # accessKeyId / secretAccessKey / region (+ optional sessionToken /
+  # customEndpoint for VPC interface endpoints, Transfer Acceleration,
+  # AWS GovCloud, AWS China regions).
+  #
+  # After `up -d`:
+  #   npm run install-plugin -- --endpoint http://daisy-aws-s3:8080
+
+  daisy-aws-s3:
+    profiles: ["aws-s3", "full"]
+    image: vivek13186/daisy-plugin-aws-s3:latest
+    container_name: daisy-aws-s3
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+    # Host port mapping (off by default — uncomment for local curl/browser).
+    ports:
+       - "7004:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # ── Generic S3-compatible plugin ────────────────────────────────────
+  # One container, one Daisy node. Talks to anything that speaks the S3
+  # API — Wasabi, MinIO, DigitalOcean Spaces, Cloudflare R2, Backblaze
+  # B2, vanilla AWS S3, your own MinIO-on-Kubernetes, etc.
+  #   bucket.getAll / bucket.create / bucket.delete / bucket.search /
+  #   file.getAll / file.upload / file.download / file.copy /
+  #   file.delete / folder.create / folder.getAll / folder.delete
+  #
+  # No AWS-specific extras — if you need storage classes, KMS, etc.,
+  # use the `aws-s3` plugin instead.
+  #
+  # Auth: workspace `generic` config (default name "s3") with
+  # endpoint / region / accessKeyId / secretAccessKey. Set
+  # forcePathStyle: true for MinIO and most on-prem setups.
+  #
+  # After `up -d`:
+  #   npm run install-plugin -- --endpoint http://daisy-s3:8080
+
+  daisy-s3:
+    profiles: ["s3", "full"]
+    image: vivek13186/daisy-plugin-s3:latest
+    container_name: daisy-s3
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+    # Host port mapping (off by default — uncomment for local curl/browser).
+    ports:
+       - "7005:8080"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 30s

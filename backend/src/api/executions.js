@@ -6,6 +6,7 @@ import { resetNodeForReplay, upsertNodeState } from "../engine/nodeStateStore.js
 import { requireUser, requireRole } from "../middleware/auth.js";
 import { diagnoseExecution } from "../selfheal/diagnose.js";
 import { auditLog } from "../audit/log.js";
+import { normalizeTags } from "../utils/tags.js";
 
 const router = Router();
 
@@ -23,7 +24,7 @@ router.use(requireUser);
 
 router.get("/", requireRole("admin", "editor", "viewer"), async (req, res, next) => {
   try {
-    const { graphId, status, limit = 50 } = req.query;
+    const { graphId, status, tags, limit = 50 } = req.query;
     const params = [req.user.workspaceId];        // $1 — always present
     const where = ["e.workspace_id = $1"];
     if (graphId) {
@@ -41,6 +42,15 @@ router.get("/", requireRole("admin", "editor", "viewer"), async (req, res, next)
         where.push(`status = ANY($${params.length})`);
       }
     }
+    // Tag filter — overlap semantics (`tags && ARRAY[...]`) so a row
+    // matches when ANY of the requested tags is present. Empty/invalid
+    // tag values are dropped by normalizeTags. The query uses the GIN
+    // index on executions.tags so it stays sub-millisecond at scale.
+    const tagList = normalizeTags(tags);
+    if (tagList.length) {
+      params.push(tagList);
+      where.push(`e.tags && $${params.length}::text[]`);
+    }
     params.push(Math.min(parseInt(limit, 10) || 50, 200));
     const whereSql = `WHERE ${where.join(" AND ")}`;
     // graphs lost its `version` column when the schema flipped to single-row
@@ -49,6 +59,7 @@ router.get("/", requireRole("admin", "editor", "viewer"), async (req, res, next)
     // `graph_version`, it'll just see undefined.
     const { rows } = await pool.query(
       `SELECT e.id, e.graph_id, e.status, e.started_at, e.finished_at, e.created_at, e.error,
+              e.tags,
               g.name AS graph_name
        FROM executions e
        LEFT JOIN graphs g ON g.id = e.graph_id

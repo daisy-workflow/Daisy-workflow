@@ -37,6 +37,7 @@ import { NotFoundError, ValidationError } from "../utils/errors.js";
 import { requireUser, requireRole } from "../middleware/auth.js";
 import { limiters } from "../middleware/rateLimit.js";
 import { auditLog } from "../audit/log.js";
+import { normalizeTags } from "../utils/tags.js";
 
 // `dsl` is the canonical body field. Older clients still posting `yaml`
 // keep working — we accept either here and treat the contents as JSON.
@@ -288,10 +289,14 @@ router.post("/:id/execute", limiters.execute, requireRole("admin", "editor"), as
 
     const execId = uuid();
     const userInput = req.body?.context || {};
+    // Tags arrive on the manual-run path from the Run dialog. Body
+    // shape: { context, tags: ["release", "manual"] }. Empty/invalid
+    // values are dropped by normalizeTags — the row gets [] either way.
+    const tags = normalizeTags(req.body?.tags);
     await pool.query(
-      `INSERT INTO executions (id, graph_id, status, inputs, context, workspace_id)
-       VALUES ($1,$2,'queued',$3,'{}'::jsonb,$4)`,
-      [execId, req.params.id, JSON.stringify(userInput), req.user.workspaceId],
+      `INSERT INTO executions (id, graph_id, status, inputs, context, workspace_id, tags)
+       VALUES ($1,$2,'queued',$3,'{}'::jsonb,$4,$5)`,
+      [execId, req.params.id, JSON.stringify(userInput), req.user.workspaceId, tags],
     );
     await enqueueExecution({ executionId: execId, graphId: req.params.id });
     await auditLog({

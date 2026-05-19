@@ -14,6 +14,7 @@ import { triggerRegistry } from "./registry.js";
 import { log } from "../utils/logger.js";
 import { resolve as resolveExpressions } from "../dsl/expression.js";
 import { loadConfigsMap } from "../configs/loader.js";
+import { normalizeTags } from "../utils/tags.js";
 
 // triggerId -> { row, subscription, lastError }
 const active = new Map();
@@ -173,10 +174,13 @@ async function stopOne(triggerId) {
  *  downstream lookup (configs, memory, listing) stays scoped. */
 async function fireTrigger(row, payload) {
   const execId = uuid();
+  // No tag source on auto-fired triggers in v1 — cron/mqtt/email fire
+  // without a caller-supplied list, so the execution starts with [].
+  // Manual-run via fireTriggerById supports tags below.
   await pool.query(
-    `INSERT INTO executions (id, graph_id, status, inputs, context, workspace_id)
-     VALUES ($1,$2,'queued',$3,'{}'::jsonb,$4)`,
-    [execId, row.graph_id, JSON.stringify(payload), row.workspace_id],
+    `INSERT INTO executions (id, graph_id, status, inputs, context, workspace_id, tags)
+     VALUES ($1,$2,'queued',$3,'{}'::jsonb,$4,$5)`,
+    [execId, row.graph_id, JSON.stringify(payload), row.workspace_id, []],
   );
   await pool.query(
     `UPDATE triggers
@@ -201,7 +205,7 @@ export function activeCount() { return active.size; }
  * Returns { executionId } so the caller can deep-link the user to
  * the InstanceViewer.
  */
-export async function fireTriggerById(triggerId, { payload = {}, workspaceId } = {}) {
+export async function fireTriggerById(triggerId, { payload = {}, workspaceId, tags } = {}) {
   const params = [triggerId];
   let sql = "SELECT * FROM triggers WHERE id = $1";
   if (workspaceId) {
@@ -212,10 +216,14 @@ export async function fireTriggerById(triggerId, { payload = {}, workspaceId } =
   const row = rows[0];
   if (!row) throw new Error(`trigger ${triggerId} not found`);
   const execId = uuid();
+  // Tags arrive on the manual "Run now" path. Normalise once at the
+  // boundary so the DB sees a clean string[] regardless of whether the
+  // caller passed a list, comma-string, or something junk.
+  const cleanTags = normalizeTags(tags);
   await pool.query(
-    `INSERT INTO executions (id, graph_id, status, inputs, context, workspace_id)
-     VALUES ($1,$2,'queued',$3,'{}'::jsonb,$4)`,
-    [execId, row.graph_id, JSON.stringify(payload), row.workspace_id],
+    `INSERT INTO executions (id, graph_id, status, inputs, context, workspace_id, tags)
+     VALUES ($1,$2,'queued',$3,'{}'::jsonb,$4,$5)`,
+    [execId, row.graph_id, JSON.stringify(payload), row.workspace_id, cleanTags],
   );
   await pool.query(
     `UPDATE triggers
