@@ -117,6 +117,106 @@
       Only workspace admins can change quotas. You're seeing the
       project's current usage in read-only mode.
     </q-banner>
+
+    <!-- Per-model + per-agent breakdowns ─────────────────────── -->
+    <div class="row q-col-gutter-md q-mt-md">
+      <div class="col-12 col-md-7">
+        <q-card flat bordered>
+          <q-card-section>
+            <div class="row items-center q-mb-sm">
+              <q-icon name="psychology" class="q-mr-sm" />
+              <div class="text-subtitle1">Spend by model</div>
+              <q-space />
+              <q-btn-toggle
+                v-model="windowDays"
+                :options="[
+                  { label: 'Month-to-date', value: 0 },
+                  { label: '7d',  value: 7  },
+                  { label: '30d', value: 30 },
+                ]"
+                dense unelevated no-caps size="sm"
+                color="grey-3" text-color="grey-9"
+                toggle-color="primary" toggle-text-color="white"
+                @update:model-value="loadBreakdowns"
+              />
+            </div>
+            <div class="text-caption text-grey-7 q-mb-sm">
+              Total this {{ windowDays === 0 ? "month" : `${windowDays} days` }}:
+              <b>{{ formatDollars(totalCostMicros) }}</b>
+              · {{ Intl.NumberFormat().format(totalTokens) }} tokens
+              · {{ totalCalls }} calls
+              <span v-if="cacheSavingsMicros > 0" class="q-ml-sm text-positive">
+                · saved {{ formatDollars(cacheSavingsMicros) }} from cache
+              </span>
+            </div>
+            <q-table
+              :rows="modelRows"
+              :columns="modelColumns"
+              row-key="model"
+              flat dense
+              hide-pagination
+              :pagination="{ rowsPerPage: 0 }"
+              :loading="loadingBreakdown"
+            >
+              <template v-slot:body-cell-cost="props">
+                <q-td :props="props">{{ formatDollars(props.row.cost_micros) }}</q-td>
+              </template>
+              <template v-slot:body-cell-tokens="props">
+                <q-td :props="props">
+                  {{ Intl.NumberFormat().format(Number(props.row.input_tokens) + Number(props.row.output_tokens)) }}
+                </q-td>
+              </template>
+              <template v-slot:body-cell-cache_hits="props">
+                <q-td :props="props">
+                  <span v-if="props.row.cache_hits">
+                    {{ props.row.cache_hits }} / {{ props.row.calls }}
+                  </span>
+                  <span v-else class="text-grey-5">—</span>
+                </q-td>
+              </template>
+              <template v-slot:body-cell-latency="props">
+                <q-td :props="props">
+                  <span v-if="props.row.avg_latency_ms != null">
+                    {{ Math.round(props.row.avg_latency_ms) }}ms
+                  </span>
+                  <span v-else class="text-grey-5">—</span>
+                </q-td>
+              </template>
+            </q-table>
+            <div v-if="!loadingBreakdown && modelRows.length === 0" class="text-caption text-grey-6 q-mt-sm">
+              No agent calls yet in this window.
+            </div>
+          </q-card-section>
+        </q-card>
+      </div>
+
+      <div class="col-12 col-md-5">
+        <q-card flat bordered>
+          <q-card-section>
+            <div class="row items-center q-mb-sm">
+              <q-icon name="smart_toy" class="q-mr-sm" />
+              <div class="text-subtitle1">Spend by agent</div>
+            </div>
+            <q-table
+              :rows="agentRows"
+              :columns="agentColumns"
+              row-key="agent_title"
+              flat dense
+              hide-pagination
+              :pagination="{ rowsPerPage: 0 }"
+              :loading="loadingBreakdown"
+            >
+              <template v-slot:body-cell-cost="props">
+                <q-td :props="props">{{ formatDollars(props.row.cost_micros) }}</q-td>
+              </template>
+            </q-table>
+            <div v-if="!loadingBreakdown && agentRows.length === 0" class="text-caption text-grey-6 q-mt-sm">
+              No agent calls yet in this window.
+            </div>
+          </q-card-section>
+        </q-card>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -164,7 +264,88 @@ onMounted(async () => {
     if (!picked) { router.replace({ name: "home" }); return; }
   }
   await reload();
+  await loadBreakdowns();
 });
+
+// ── Per-model / per-agent breakdowns ────────────────────────
+const windowDays         = ref(0);            // 0 = month-to-date
+const loadingBreakdown   = ref(false);
+const modelRows          = ref([]);
+const agentRows          = ref([]);
+
+const modelColumns = [
+  { name: "provider", label: "Provider", field: "provider", align: "left",  style: "width: 120px;" },
+  { name: "model",    label: "Model",    field: "model",    align: "left" },
+  { name: "calls",    label: "Calls",    field: "calls",    align: "right", style: "width: 70px;" },
+  { name: "cache_hits", label: "Cached", align: "left",  style: "width: 90px;" },
+  { name: "tokens",   label: "Tokens",   align: "right", style: "width: 110px;" },
+  { name: "latency",  label: "p50 ms",   align: "right", style: "width: 80px;" },
+  { name: "cost",     label: "Spend",    align: "right", style: "width: 110px;" },
+];
+const agentColumns = [
+  { name: "agent_title", label: "Agent", field: "agent_title", align: "left" },
+  { name: "calls",       label: "Calls", field: "calls",       align: "right", style: "width: 70px;" },
+  { name: "cost",        label: "Spend", align: "right", style: "width: 110px;" },
+];
+
+const totalCostMicros = computed(() =>
+  modelRows.value.reduce((s, r) => s + Number(r.cost_micros || 0), 0),
+);
+const totalTokens = computed(() =>
+  modelRows.value.reduce((s, r) =>
+    s + Number(r.input_tokens || 0) + Number(r.output_tokens || 0), 0),
+);
+const totalCalls = computed(() =>
+  modelRows.value.reduce((s, r) => s + Number(r.calls || 0), 0),
+);
+// "What we would have spent without the cache": tokens × rate for the
+// cache_hits portion. The events table tracks input/output tokens for
+// cached rows too (cost_micros is zero, but the original would-have-
+// spent figure lives on the un-cached neighbours). We approximate by
+// scaling the un-cached cost by (cache_hits / non_cached_calls).
+const cacheSavingsMicros = computed(() => {
+  let saved = 0;
+  for (const r of modelRows.value) {
+    const nonCached = (r.calls || 0) - (r.cache_hits || 0);
+    if (nonCached > 0 && r.cache_hits > 0) {
+      const perCallMicros = Number(r.cost_micros || 0) / nonCached;
+      saved += perCallMicros * r.cache_hits;
+    }
+  }
+  return Math.round(saved);
+});
+
+async function loadBreakdowns() {
+  loadingBreakdown.value = true;
+  try {
+    const params = windowDays.value ? { days: windowDays.value } : {};
+    const [m, a] = await Promise.all([
+      Quotas.usageByModel(params),
+      Quotas.usageByAgent(params),
+    ]);
+    modelRows.value = m.rows || [];
+    agentRows.value = a.rows || [];
+  } catch (e) {
+    $q.notify({
+      type: "negative",
+      message: `Couldn't load usage breakdown: ${e?.response?.data?.message || e.message}`,
+      position: "bottom",
+    });
+    modelRows.value = [];
+    agentRows.value = [];
+  } finally {
+    loadingBreakdown.value = false;
+  }
+}
+
+function formatDollars(micros) {
+  const d = (Number(micros) || 0) / 1_000_000;
+  if (d === 0)    return "$0.00";
+  if (d < 0.01)   return `$${d.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}`;
+  if (d < 1)      return `$${d.toFixed(4)}`;
+  if (d < 1000)   return `$${d.toFixed(2)}`;
+  return `$${Intl.NumberFormat().format(Math.round(d))}`;
+}
 
 // ── Mutations ──────────────────────────────────────────────
 async function onSet(q) {

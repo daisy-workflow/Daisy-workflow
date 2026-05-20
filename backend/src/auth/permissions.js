@@ -53,6 +53,19 @@ const READ_PERMS = [
   "plugin.list",
   "project.read",
   "project.member.read",
+  // RAG knowledge bases — list, fetch, test retrieval. Read covers
+  // /query because retrieval doesn't mutate the KB.
+  "kb.read",
+  // Guardrails — read project policy + violation feed + run the
+  // /test endpoint. Editors and viewers both need this so they can
+  // see what's being filtered on their behalf.
+  "guardrails.read",
+  // Prompt templates — read + preview (Phase D).
+  "prompt.read",
+  // Eval suites + cases + runs (Phase D).
+  "eval.read",
+  // Model routes (Phase E).
+  "route.read",
 ];
 
 const WRITE_PERMS = [
@@ -83,6 +96,20 @@ const WRITE_PERMS = [
   "memory.delete",
   // Plugin invocation (call from workflows)
   "plugin.invoke",
+  // RAG: create/update/delete KBs + ingest documents into them.
+  // Editors can ingest; project admins still control sharing via
+  // resource grants when KBs become workspace-shared in Phase B.1.
+  "kb.write",
+  // Guardrails: edit the project policy. Sits in WRITE_PERMS so
+  // project editors can tune (but reads / violations are open to
+  // viewers too via guardrails.read above).
+  "guardrails.write",
+  // Prompt templates — author, edit, delete (Phase D).
+  "prompt.write",
+  // Eval suites — author, edit, delete + start runs (Phase D).
+  "eval.write",
+  // Model routes — author, edit, delete (Phase E).
+  "route.write",
 ];
 
 const ADMIN_PERMS = [
@@ -120,6 +147,17 @@ const VIEWER_PERMS = [
   "memory.read",
   "plugin.list",
   "project.read",
+  // RAG: viewers can see KBs + run test queries. They can't ingest or
+  // delete (those need kb.write).
+  "kb.read",
+  // Guardrails: viewers see the project policy + the violation feed
+  // so they can audit what's being filtered. They can't edit.
+  "guardrails.read",
+  // Prompt templates + evals: viewers can browse + preview.
+  "prompt.read",
+  "eval.read",
+  // Model routes: viewers can browse.
+  "route.read",
 ];
 
 const BUILTIN_ROLE_PERMS = {
@@ -150,6 +188,14 @@ const WORKSPACE_ADMIN_EXTRA_PERMS = new Set([
   "custom_role.create",
   "custom_role.update",
   "custom_role.delete",
+  // Phase D: authoring workspace-shared prompt templates is reserved
+  // to workspace admins, mirroring configs/agents sharing.
+  "prompt.share_workspace",
+  // Phase F: workspace-wide compliance settings + GDPR data-subject
+  // actions are workspace-admin only — they affect every project.
+  "compliance.read",
+  "compliance.write",
+  "compliance.dataSubject",
 ]);
 
 /**

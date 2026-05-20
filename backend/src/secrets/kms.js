@@ -10,12 +10,26 @@
 // Pluggable selection via env:
 //
 //     KMS_PROVIDER=local          (default, no extra deps, dev-friendly)
-//     KMS_PROVIDER=aws            requires @aws-sdk/client-kms; reads
-//                                 KMS_KEY_ID + AWS_REGION
+//     KMS_PROVIDER=aws            requires @aws-sdk/client-kms;
+//                                 reads KMS_KEY_ID + AWS_REGION
+//     KMS_PROVIDER=vault          HashiCorp Vault Transit. No SDK dep —
+//                                 talks HTTP. Reads VAULT_ADDR,
+//                                 VAULT_TOKEN, VAULT_TRANSIT_KEY,
+//                                 optional VAULT_TRANSIT_MOUNT,
+//                                 VAULT_NAMESPACE, VAULT_CACERT.
+//     KMS_PROVIDER=azure          Azure Key Vault. Requires
+//                                 @azure/identity + @azure/keyvault-keys.
+//                                 Reads AZURE_KEYVAULT_URI,
+//                                 AZURE_KEYVAULT_KEY_NAME, optional
+//                                 AZURE_KEYVAULT_KEY_VERSION,
+//                                 AZURE_KEYVAULT_WRAP_ALG.
+//     KMS_PROVIDER=gcp            GCP KMS. Requires @google-cloud/kms.
+//                                 Reads GCP_KMS_KEY (full resource
+//                                 name), optional GCP_KMS_KEY_VERSION.
 //
 // The provider contract is intentionally tiny — three methods, all
-// async, all exchanging Buffers. New providers (gcp, azure, vault…)
-// just implement the same shape.
+// async, all exchanging Buffers. Every provider implements the same
+// shape; new ones drop in by adding a case to the switch below.
 //
 //     generateDataKey()
 //       → { plaintextDek: Buffer, wrappedDek: Buffer, kekId: string }
@@ -56,8 +70,20 @@ export async function getProvider() {
         case "aws":
           mod = await import("./providers/aws.js");
           break;
+        case "vault":
+          mod = await import("./providers/vault.js");
+          break;
+        case "azure":
+          mod = await import("./providers/azure.js");
+          break;
+        case "gcp":
+          mod = await import("./providers/gcp.js");
+          break;
         default:
-          throw new Error(`Unknown KMS_PROVIDER: "${name}"`);
+          throw new Error(
+            `Unknown KMS_PROVIDER: "${name}". ` +
+            `Supported: local, aws, vault, azure, gcp.`,
+          );
       }
       _provider = await mod.create();
       log.info("kms provider ready", { provider: _provider.id, kek: _provider.kekId || null });

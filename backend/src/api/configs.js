@@ -155,6 +155,22 @@ router.post("/", requireRole("admin"), async (req, res, next) => {
     const normalised = validateAndNormalize(type, stripMaskedSecrets(type, data));
     if (TYPES[type].freeform && data?.__secret) normalised.__secret = data.__secret;
 
+    // Phase F: compliance gate. Refuse the save when the resolved
+    // provider isn't in the workspace's allow-list, or when its
+    // endpoint URL doesn't match the workspace's data residency.
+    // Runs against the normalised + decrypted data so we see the
+    // actual provider/baseUrl the runtime would use.
+    if (type === "ai.provider" || type === "vector.qdrant") {
+      const { loadWorkspaceCompliance, assertProviderAllowed }
+        = await import("../compliance/enforce.js");
+      const ws = await loadWorkspaceCompliance(req.user.workspaceId);
+      try { assertProviderAllowed(ws, normalised); }
+      catch (e) {
+        if (e.code === "COMPLIANCE_BLOCKED") throw new ValidationError(e.message);
+        throw e;
+      }
+    }
+
     const { data: stored, encryption_version, kek_id } =
       await encryptSecrets(type, normalised);
 
@@ -243,6 +259,19 @@ router.put("/:id", requireRole("admin"), async (req, res, next) => {
         const incomingSecret = data?.__secret || existing.data?.__secret || {};
         if (incomingSecret && Object.keys(incomingSecret).length) {
           normalised.__secret = incomingSecret;
+        }
+      }
+      // Phase F: same compliance gate as POST. PUT can change the
+      // provider mid-life (e.g., user pasted new credentials), so
+      // we re-check on every edit rather than only at create-time.
+      if (existing.type === "ai.provider" || existing.type === "vector.qdrant") {
+        const { loadWorkspaceCompliance, assertProviderAllowed }
+          = await import("../compliance/enforce.js");
+        const ws = await loadWorkspaceCompliance(req.user.workspaceId);
+        try { assertProviderAllowed(ws, normalised); }
+        catch (e) {
+          if (e.code === "COMPLIANCE_BLOCKED") throw new ValidationError(e.message);
+          throw e;
         }
       }
       const { data: stored, encryption_version, kek_id } =

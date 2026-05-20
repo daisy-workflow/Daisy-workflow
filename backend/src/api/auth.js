@@ -34,6 +34,15 @@ import {
 import { requireUser } from "../middleware/auth.js";
 import { limiters } from "../middleware/rateLimit.js";
 import { auditLog } from "../audit/log.js";
+import {
+  isSamlConfiguredAtSpLevel,
+  getSamlConfig,
+  workspaceIdForSlug,
+  buildAuthnRequestUrl,
+  consumeSamlResponse,
+  resolveSamlUser,
+  spMetadata,
+} from "../auth/saml.js";
 
 const router = Router();
 
@@ -77,12 +86,35 @@ async function getOidcClient() {
 // Lets the frontend ask "is OIDC available, what's the SSO button
 // label?" before painting the login screen. Returns nothing sensitive.
 // ────────────────────────────────────────────────────────────────────
-router.get("/config", (_req, res) => {
+router.get("/config", async (req, res) => {
   const oidcEnabled = !!process.env.OIDC_ISSUER_URL;
+  // SAML is per-workspace. The login screen asks "does workspace X
+  // have SAML on?" via ?workspace=<slug>. Without a slug we just
+  // report whether the SP keypair is configured (so the UI can show
+  // a "Sign in with SSO — pick your workspace" affordance).
+  let samlEnabled = false;
+  let samlLabel = process.env.SAML_BUTTON_LABEL || "Sign in with SAML";
+  if (isSamlConfiguredAtSpLevel()) {
+    const slug = req.query?.workspace;
+    if (slug) {
+      const wsId = await workspaceIdForSlug(String(slug));
+      if (wsId) {
+        const cfg = await getSamlConfig(wsId);
+        samlEnabled = !!cfg;
+      }
+    } else {
+      // SP-level switch is on; per-workspace state is unknown until
+      // the user picks one. The frontend renders the SSO button with
+      // a workspace-slug prompt in this case.
+      samlEnabled = true;
+    }
+  }
   res.json({
     localEnabled: true,
     oidcEnabled,
-    oidcLabel: process.env.OIDC_BUTTON_LABEL || "Sign in with SSO",
+    oidcLabel:  process.env.OIDC_BUTTON_LABEL || "Sign in with SSO",
+    samlEnabled,
+    samlLabel,
   });
 });
 
@@ -457,5 +489,111 @@ function publicUser(u) {
     status:      u.status,
   };
 }
+
+// ════════════════════════════════════════════════════════════════════
+// SAML SSO — multi-tenant per-workspace.
+//
+// Three routes:
+//
+//   GET  /auth/saml/login?workspace=<slug>&next=<path>
+//        Builds the AuthnRequest for the named workspace's IdP and
+//        302-redirects the browser to it. Workspace selection lives
+//        in the query — the IdP echoes it back via RelayState.
+//
+//   POST /auth/saml/callback
+//        ACS endpoint. The IdP POSTs the signed SAML assertion here;
+//        we verify, map attributes onto a local user, issue Daisy's
+//        refresh cookie, and bounce the browser back to /login so
+//        the SPA can materialise the access token.
+//
+//   GET  /auth/saml/metadata?workspace=<slug>
+//        Service-provider metadata XML — what the IdP admin imports
+//        to configure their side without manual field copying.
+//
+// All three are public (no requireUser). RelayState carries a signed
+// payload so a tampered redirect can't smuggle a different workspace
+// into the callback. See auth/saml.js for the wrapper internals.
+// ════════════════════════════════════════════════════════════════════
+
+router.get("/saml/login", async (req, res, next) => {
+  try {
+    if (!isSamlConfiguredAtSpLevel()) {
+      return res.status(404).send("SAML is not configured on this server.");
+    }
+    const slug = String(req.query.workspace || "").trim();
+    if (!slug) return res.status(400).send("workspace query param required");
+    const wsId = await workspaceIdForSlug(slug);
+    if (!wsId) return res.status(404).send(`workspace "${slug}" not found`);
+    const cfg = await getSamlConfig(wsId);
+    if (!cfg) return res.status(404).send(`SAML is not enabled for workspace "${slug}"`);
+
+    const next = (typeof req.query.next === "string" && req.query.next.startsWith("/"))
+      ? req.query.next
+      : "/";
+    const url = await buildAuthnRequestUrl({ workspaceId: wsId, next });
+    res.redirect(url);
+  } catch (e) { next(e); }
+});
+
+router.post("/saml/callback", async (req, res, next) => {
+  try {
+    if (!isSamlConfiguredAtSpLevel()) {
+      return res.status(404).send("SAML is not configured on this server.");
+    }
+    // node-saml expects the parsed body to include the SAMLResponse +
+    // RelayState fields. Express + body-parser-urlencoded handles
+    // this when the IdP POSTs application/x-www-form-urlencoded
+    // (the default HTTP-POST binding).
+    const result = await consumeSamlResponse(req).catch((e) => {
+      throw new Error(`SAML response verification failed: ${e.message}`);
+    });
+
+    const user = await resolveSamlUser(result);
+
+    if (user.status !== "active") {
+      return res.status(403).send("Your account is disabled — contact an admin.");
+    }
+
+    await pool.query("UPDATE users SET last_login_at=NOW() WHERE id=$1", [user.id]);
+    log.info("saml login ok", { userId: user.id, email: user.email, workspaceId: result.workspaceId });
+    await auditLog({
+      req, action: "auth.saml.login",
+      actor:       { id: user.id, email: user.email, role: user.role },
+      workspaceId: user.workspace_id,
+      metadata:    { sub: result.sub, idpIssuer: result.cfg.idp_entity_id },
+    });
+
+    // Issue Daisy tokens. We set the refresh cookie and bounce back
+    // to /login?saml=done so the LoginPage hook calls auth.tryRefresh
+    // to materialise the access token in memory — exact same shape
+    // as the OIDC callback.
+    const refresh = await issueRefreshToken({
+      userId:    user.id,
+      userAgent: req.headers["user-agent"] || null,
+      ip:        req.ip || null,
+    });
+    res.cookie(REFRESH_COOKIE, refresh.token, refreshCookieOptions());
+    const next = result.next || "/";
+    const search = new URLSearchParams({ saml: "done", next }).toString();
+    res.redirect(`/login?${search}`);
+  } catch (e) {
+    const statusCode = e.statusCode || 400;
+    res.status(statusCode).send(e.message || "SAML callback failed");
+  }
+});
+
+router.get("/saml/metadata", async (req, res, next) => {
+  try {
+    if (!isSamlConfiguredAtSpLevel()) {
+      return res.status(404).send("SAML is not configured on this server.");
+    }
+    const slug = String(req.query.workspace || "").trim();
+    if (!slug) return res.status(400).send("workspace query param required");
+    const wsId = await workspaceIdForSlug(slug);
+    if (!wsId) return res.status(404).send(`workspace "${slug}" not found`);
+    const xml = await spMetadata(wsId);
+    res.type("application/samlmetadata+xml").send(xml);
+  } catch (e) { next(e); }
+});
 
 export default router;

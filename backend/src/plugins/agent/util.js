@@ -16,7 +16,12 @@ export async function loadAgent(ctx, title) {
     throw new Error("agent: `agent` (title) is required");
   }
   const { rows } = await pool.query(
-    "SELECT title, prompt, config_name FROM agents WHERE title = $1",
+    `SELECT a.id, a.title, a.prompt, a.config_name, a.guardrails_override,
+            a.prompt_template_id,
+            pt.body AS template_body
+       FROM agents a
+       LEFT JOIN prompt_templates pt ON pt.id = a.prompt_template_id
+      WHERE a.title = $1`,
     [title],
   );
   if (rows.length === 0) {
@@ -51,189 +56,45 @@ export async function loadAgent(ctx, title) {
  *
  * If `onText` is supplied, text deltas are streamed via SSE.
  */
-export async function callProvider({ cfg, system, userText, messages, maxTokens = 2048, onText }) {
+export async function callProvider({ cfg, system, userText, messages, images, maxTokens = 2048, onText }) {
   const finalMessages = Array.isArray(messages) && messages.length
     ? messages
     : [{ role: "user", content: String(userText ?? "") }];
 
-  if (cfg.provider === "anthropic") {
-    return onText
-      ? callAnthropicStreaming(cfg, system, finalMessages, maxTokens, onText)
-      : callAnthropic(cfg, system, finalMessages, maxTokens);
+  // Normalise images once here so each provider gets a uniform shape.
+  // Empty / undefined → empty array (no per-provider conversion path
+  // is taken). Vision is attached to the LAST user message — that's
+  // the current call's input; history messages stay text-only.
+  let normImages = [];
+  if (images) {
+    const { normaliseImages } = await import("./imageInput.js");
+    normImages = normaliseImages(images);
   }
+
+  // Dispatch to the per-provider module. Each module exports `call`
+  // (blob response) and `callStreaming` (delta-by-delta via onText).
+  // See providers/index.js for the registry.
+  const { getProvider } = await import("./providers/index.js");
+  const handler = getProvider(cfg.provider);
+  const args = { cfg, system, messages: finalMessages, maxTokens, images: normImages };
   return onText
-    ? callOpenAIStreaming(cfg, system, finalMessages, maxTokens, onText)
-    : callOpenAI(cfg, system, finalMessages, maxTokens);
+    ? handler.callStreaming({ ...args, onText })
+    : handler.call(args);
 }
 
-async function callAnthropic(cfg, system, messages, maxTokens) {
-  const baseUrl = (cfg.baseUrl || "https://api.anthropic.com/v1").replace(/\/$/, "");
-  const res = await fetch(`${baseUrl}/messages`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": cfg.apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model:      cfg.model,
-      max_tokens: maxTokens,
-      system,
-      messages,
-    }),
-  });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`agent (anthropic): ${res.status} ${String(txt).slice(0, 500)}`);
-  }
-  const data = await res.json();
-  const blocks = Array.isArray(data?.content) ? data.content : [];
-  const text = blocks.filter(b => b.type === "text").map(b => b.text).join("");
-  return {
-    text,
-    usage: {
-      inputTokens:  data?.usage?.input_tokens  ?? 0,
-      outputTokens: data?.usage?.output_tokens ?? 0,
-    },
-  };
+// Trim a string to a maximum length from the right end — used by
+// every provider for compact error messages. Lives here so the
+// provider modules don't each reinvent it.
+export function sliceLast(s, n) {
+  return String(s ?? "").slice(0, n);
 }
 
-async function callOpenAI(cfg, system, messages, maxTokens) {
-  const baseUrl = (cfg.baseUrl || "https://api.openai.com/v1").replace(/\/$/, "");
-  const res = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "content-type":  "application/json",
-      "authorization": `Bearer ${cfg.apiKey}`,
-    },
-    body: JSON.stringify({
-      model:    cfg.model,
-      max_tokens: maxTokens,
-      messages: [
-        { role: "system", content: system },
-        ...messages,
-      ],
-      temperature: 0.3,
-    }),
-  });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`agent (openai): ${res.status} ${String(txt).slice(0, 500)}`);
-  }
-  const data = await res.json();
-  const text = data?.choices?.[0]?.message?.content || "";
-  return {
-    text,
-    usage: {
-      inputTokens:  data?.usage?.prompt_tokens     ?? 0,
-      outputTokens: data?.usage?.completion_tokens ?? 0,
-    },
-  };
-}
-
-// ──────────────────────────────────────────────────────────────────────
-// Streaming variants — same providers, opened with `stream: true`,
-// reading the SSE response and forwarding text deltas via `onText`.
-// Final shape matches the blob variants exactly.
-// ──────────────────────────────────────────────────────────────────────
-
-async function callAnthropicStreaming(cfg, system, messages, maxTokens, onText) {
-  const baseUrl = (cfg.baseUrl || "https://api.anthropic.com/v1").replace(/\/$/, "");
-  const res = await fetch(`${baseUrl}/messages`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": cfg.apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model:      cfg.model,
-      max_tokens: maxTokens,
-      stream:     true,
-      system,
-      messages,
-    }),
-  });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`agent (anthropic): ${res.status} ${String(txt).slice(0, 500)}`);
-  }
-
-  let acc = "";
-  const usage = { inputTokens: 0, outputTokens: 0 };
-
-  for await (const evt of parseSse(res.body)) {
-    let parsed;
-    try { parsed = JSON.parse(evt.data); } catch { continue; }
-
-    // Anthropic streaming event shapes:
-    //   message_start         → carries initial usage.input_tokens
-    //   content_block_delta   → { delta: { type: "text_delta", text: "…" } }
-    //   message_delta         → { usage: { output_tokens: N } } (cumulative)
-    //   message_stop          → end of stream
-    if (parsed.type === "message_start" && parsed.message?.usage) {
-      usage.inputTokens  = parsed.message.usage.input_tokens  ?? usage.inputTokens;
-      usage.outputTokens = parsed.message.usage.output_tokens ?? usage.outputTokens;
-    } else if (parsed.type === "content_block_delta" && parsed.delta?.type === "text_delta") {
-      const delta = parsed.delta.text || "";
-      if (delta) {
-        acc += delta;
-        try { onText(delta); } catch { /* never let a bad listener crash the stream */ }
-      }
-    } else if (parsed.type === "message_delta" && parsed.usage) {
-      usage.outputTokens = parsed.usage.output_tokens ?? usage.outputTokens;
-    }
-  }
-
-  return { text: acc, usage };
-}
-
-async function callOpenAIStreaming(cfg, system, messages, maxTokens, onText) {
-  const baseUrl = (cfg.baseUrl || "https://api.openai.com/v1").replace(/\/$/, "");
-  const res = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "content-type":  "application/json",
-      "authorization": `Bearer ${cfg.apiKey}`,
-    },
-    body: JSON.stringify({
-      model:      cfg.model,
-      max_tokens: maxTokens,
-      stream:     true,
-      stream_options: { include_usage: true },     // makes the final chunk carry usage
-      messages: [
-        { role: "system", content: system },
-        ...messages,
-      ],
-      temperature: 0.3,
-    }),
-  });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`agent (openai): ${res.status} ${String(txt).slice(0, 500)}`);
-  }
-
-  let acc = "";
-  const usage = { inputTokens: 0, outputTokens: 0 };
-
-  for await (const evt of parseSse(res.body)) {
-    if (evt.data === "[DONE]") break;
-    let parsed;
-    try { parsed = JSON.parse(evt.data); } catch { continue; }
-
-    const delta = parsed.choices?.[0]?.delta?.content || "";
-    if (delta) {
-      acc += delta;
-      try { onText(delta); } catch { /* see anthropic comment */ }
-    }
-    if (parsed.usage) {
-      usage.inputTokens  = parsed.usage.prompt_tokens     ?? usage.inputTokens;
-      usage.outputTokens = parsed.usage.completion_tokens ?? usage.outputTokens;
-    }
-  }
-
-  return { text: acc, usage };
-}
+// Per-provider request/response handlers live in ./providers/ — see
+// providers/index.js for the registry. The legacy inline
+// callAnthropic / callOpenAI / *Streaming functions that used to
+// live here have been extracted to providers/anthropic.js and
+// providers/openai.js. parseSse stays here so the new modules can
+// import it; sliceLast is exported above.
 
 /**
  * Async-iterator over an SSE response body. Yields `{ event, data }`
@@ -244,7 +105,7 @@ async function callOpenAIStreaming(cfg, system, messages, maxTokens, onText) {
  * Tolerates partial frames split across network reads — we accumulate
  * a buffer until we see a `\n\n` terminator, then emit and trim.
  */
-async function* parseSse(stream) {
+export async function* parseSse(stream) {
   const decoder = new TextDecoder();
   let buffer = "";
   // Node's fetch returns a web ReadableStream; for-await iterates Uint8Array chunks.

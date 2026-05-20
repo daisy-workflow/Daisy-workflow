@@ -312,6 +312,17 @@ export const ProjectPlugins = {
   unset:  (pluginName)                => api.delete(`/project-plugins/${pluginName}`).then(r => r.data),
 };
 
+// Per-workspace SAML SSO config — workspace-admin only on the server
+// (workspace.update permission). importMetadata parses an IdP XML
+// blob into form fields without saving.
+export const SamlConfig = {
+  get:    ()                  => api.get("/saml-config").then(r => r.data),
+  put:    (body)              => api.put("/saml-config", body).then(r => r.data),
+  remove: ()                  => api.delete("/saml-config").then(r => r.data),
+  importMetadata: (metadataXml) =>
+                  api.post("/saml-config/import", { metadataXml }).then(r => r.data),
+};
+
 // Just-in-time elevations. Workspace admins issue/revoke; every user
 // can see their own active grants via /mine.
 export const JitGrants = {
@@ -324,10 +335,16 @@ export const JitGrants = {
 // Project quotas. List returns snapshots (limit + current usage) for
 // every known quota kind in the active project. PUT and DELETE are
 // workspace-admin only on the server.
+//
+// usageByModel / usageByAgent power the per-model / per-agent
+// breakdowns on the Quotas page. Defaults to month-to-date; pass
+// `days: 7` (or any 1-365) for a rolling window.
 export const Quotas = {
-  list:   ()                => api.get("/quotas").then(r => r.data),
-  set:    (kind, limit)     => api.put(`/quotas/${kind}`, { limit }).then(r => r.data),
-  unset:  (kind)            => api.delete(`/quotas/${kind}`).then(r => r.data),
+  list:         ()                       => api.get("/quotas").then(r => r.data),
+  set:          (kind, limit)            => api.put(`/quotas/${kind}`, { limit }).then(r => r.data),
+  unset:        (kind)                   => api.delete(`/quotas/${kind}`).then(r => r.data),
+  usageByModel: (params = {})            => api.get("/quotas/usage/by-model", { params }).then(r => r.data),
+  usageByAgent: (params = {})            => api.get("/quotas/usage/by-agent", { params }).then(r => r.data),
 };
 
 // Custom roles + their grants. Roles are workspace-scoped; grants
@@ -377,6 +394,126 @@ export const ServiceAccounts = {
   keys:       (id)                  => api.get(`/service-accounts/${id}/keys`).then(r => r.data),
   createKey:  (id, body = {})       => api.post(`/service-accounts/${id}/keys`, body).then(r => r.data),
   revokeKey:  (id, keyId)           => api.post(`/service-accounts/${id}/keys/${keyId}/revoke`).then(r => r.data),
+};
+
+// Knowledge Bases (RAG). Project-scoped vector stores; the UI lives at
+// /admin?view=knowledge-bases. uploadDocument uses multipart so the
+// file streams up untouched — never base64-encoded through JSON.
+export const KnowledgeBases = {
+  // Embedder catalog (provider + supported models). Public to any
+  // authenticated user; no project context required.
+  embedders: () => api.get("/kbs/embedders").then(r => r.data),
+  // Vector backend catalog (pgvector / qdrant / …). Drives the
+  // Backend dropdown on the Create-KB dialog.
+  backends:  () => api.get("/kbs/backends").then(r => r.data),
+
+  list:    ()         => api.get("/kbs").then(r => r.data),
+  get:     (id)       => api.get(`/kbs/${id}`).then(r => r.data),
+  create:  (body)     => api.post("/kbs", body).then(r => r.data),
+  update:  (id, body) => api.put(`/kbs/${id}`, body).then(r => r.data),
+  remove:  (id)       => api.delete(`/kbs/${id}`).then(r => r.data),
+
+  // Documents
+  documents:      (id)            => api.get(`/kbs/${id}/documents`).then(r => r.data),
+  deleteDocument: (id, docId)     => api.delete(`/kbs/${id}/documents/${docId}`).then(r => r.data),
+  uploadDocument: (id, file, title) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    if (title) fd.append("title", title);
+    return api.post(`/kbs/${id}/documents/upload`, fd, {
+      headers: { "content-type": "multipart/form-data" },
+    }).then(r => r.data);
+  },
+  fetchUrl: (id, { url, title }) =>
+    api.post(`/kbs/${id}/documents/url`, { url, title }).then(r => r.data),
+  addText:  (id, { text, title }) =>
+    api.post(`/kbs/${id}/documents/text`, { text, title }).then(r => r.data),
+
+  // Test retrieval
+  query: (id, { query, topK, minScore }) =>
+    api.post(`/kbs/${id}/query`, { query, topK, minScore }).then(r => r.data),
+};
+
+// Prompt templates (Phase D) — versioned, parameterised prompts that
+// agents can reference instead of an inline prompt. Templates live at
+// project or workspace scope; the list endpoint returns both.
+export const PromptTemplates = {
+  list:    ()         => api.get("/prompt-templates").then(r => r.data),
+  get:     (id)       => api.get(`/prompt-templates/${id}`).then(r => r.data),
+  create:  (body)     => api.post("/prompt-templates", body).then(r => r.data),
+  update:  (id, body) => api.put(`/prompt-templates/${id}`, body).then(r => r.data),
+  remove:  (id)       => api.delete(`/prompt-templates/${id}`).then(r => r.data),
+  preview: (id, vars, strict = false) =>
+    api.post(`/prompt-templates/${id}/preview`, { vars, strict }).then(r => r.data),
+};
+
+// Eval framework (Phase D) — suites of test cases pinned to an agent.
+// Runs are synchronous from the client's point of view: POST /runs
+// blocks until the suite finishes and returns the run's totals.
+export const Evals = {
+  scorers: () => api.get("/evals/scorers").then(r => r.data),
+
+  // Suites
+  listSuites:   ()         => api.get("/evals/suites").then(r => r.data),
+  getSuite:     (id)       => api.get(`/evals/suites/${id}`).then(r => r.data),
+  createSuite:  (body)     => api.post("/evals/suites", body).then(r => r.data),
+  updateSuite:  (id, body) => api.put(`/evals/suites/${id}`, body).then(r => r.data),
+  deleteSuite:  (id)       => api.delete(`/evals/suites/${id}`).then(r => r.data),
+
+  // Cases (nested under suite)
+  listCases:   (suiteId)               => api.get(`/evals/suites/${suiteId}/cases`).then(r => r.data),
+  createCase:  (suiteId, body)         => api.post(`/evals/suites/${suiteId}/cases`, body).then(r => r.data),
+  updateCase:  (suiteId, caseId, body) => api.put(`/evals/suites/${suiteId}/cases/${caseId}`, body).then(r => r.data),
+  deleteCase:  (suiteId, caseId)       => api.delete(`/evals/suites/${suiteId}/cases/${caseId}`).then(r => r.data),
+
+  // Runs
+  startRun:    (suiteId)            => api.post(`/evals/suites/${suiteId}/runs`).then(r => r.data),
+  listRuns:    (suiteId, params={})  => api.get(`/evals/suites/${suiteId}/runs`, { params }).then(r => r.data),
+  getRun:      (runId)              => api.get(`/evals/runs/${runId}`).then(r => r.data),
+  runResults:  (runId)              => api.get(`/evals/runs/${runId}/results`).then(r => r.data),
+};
+
+// Compliance (Phase F) — workspace-wide mode + residency + GDPR
+// data-subject endpoints. Workspace admin only.
+export const Compliance = {
+  modes:        ()             => api.get("/compliance/modes").then(r => r.data),
+  get:          ()             => api.get("/compliance").then(r => r.data),
+  set:          (body)         => api.put("/compliance", body).then(r => r.data),
+  exportUser:   (userId)       => api.get(`/compliance/users/${userId}/export`).then(r => r.data),
+  eraseUser:    (userId, body) => api.delete(`/compliance/users/${userId}`, { data: body }).then(r => r.data),
+  erasureLog:   (params = {})  => api.get("/compliance/erasure-log", { params }).then(r => r.data),
+};
+
+// Model routes (Phase E) — named indirection from a workflow to an
+// agent. Three strategies: static (one agent), tier (cheap/balanced/
+// strong selectable at call time), fallback (chain to retry on error).
+// Workflows reference routes via the `model.route` builtin plugin.
+export const ModelRoutes = {
+  list:    ()         => api.get("/model-routes").then(r => r.data),
+  get:     (id)       => api.get(`/model-routes/${id}`).then(r => r.data),
+  create:  (body)     => api.post("/model-routes", body).then(r => r.data),
+  update:  (id, body) => api.put(`/model-routes/${id}`, body).then(r => r.data),
+  remove:  (id)       => api.delete(`/model-routes/${id}`).then(r => r.data),
+};
+
+// Guardrails — project-level policy editor + violations feed.
+// The agent-level override travels with the agent row (managed via
+// the existing Agents endpoints).
+export const Guardrails = {
+  // Catalog for the editor: detectors + their UI metadata + defaults.
+  detectors: () => api.get("/guardrails/detectors").then(r => r.data),
+
+  // Project policy.
+  getPolicy: ()      => api.get("/guardrails/policy").then(r => r.data),
+  setPolicy: (body)  => api.put("/guardrails/policy", body).then(r => r.data),
+
+  // Try-before-save: runs an arbitrary text against an arbitrary
+  // (or persisted) policy and returns the redacted text + violations.
+  test: (body)       => api.post("/guardrails/test", body).then(r => r.data),
+
+  // Paginated violation feed. `params`: { limit, cursor, detector, side }.
+  violations: (params = {}) =>
+    api.get("/guardrails/violations", { params }).then(r => r.data),
 };
 
 /** Open the live-execution WebSocket. Includes the auth token as a

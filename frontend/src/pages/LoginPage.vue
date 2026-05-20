@@ -69,7 +69,7 @@
           </div>
        
 
-          <div v-if="oidcEnabled" class="row items-center q-my-sm">
+          <div v-if="oidcEnabled || samlEnabled" class="row items-center q-my-sm">
             <q-separator class="col" />
             <span class="q-px-sm text-caption text-grey-7">or</span>
             <q-separator class="col" />
@@ -82,6 +82,28 @@
             icon="login"
             @click="onOidcClick"
           />
+
+          <!-- SAML SSO. Per-workspace — the user types their workspace
+               slug, we redirect to /auth/saml/login?workspace=<slug>.
+               Slug is persisted in localStorage so returning users
+               don't have to retype. -->
+          <template v-if="samlEnabled">
+            <q-input
+              v-model="samlWorkspaceSlug"
+              dense outlined
+              label="Workspace"
+              hint="The slug of your workspace (e.g. acme)."
+              class="q-mt-sm"
+            />
+            <q-btn
+              outline
+              class="full-width q-mt-sm"
+              :label="samlLabel"
+              icon="business"
+              :disable="!samlWorkspaceSlug?.trim()"
+              @click="onSamlClick"
+            />
+          </template>
         </q-form>
       </q-card-section>
     </q-card>
@@ -104,12 +126,18 @@ const errorMessage = ref("");
 
 const oidcEnabled = ref(false);
 const oidcLabel   = ref("Sign in with SSO");
+const samlEnabled = ref(false);
+const samlLabel   = ref("Sign in with SAML");
+// Persist the last-used workspace slug so returning SAML users skip
+// retyping it. localStorage is per-browser; people switching between
+// workspaces from the same browser just edit the field.
+const samlWorkspaceSlug = ref(localStorage.getItem("daisy.samlWorkspace") || "");
 
 onMounted(async () => {
   // If the user just came back from the OIDC dance, the backend has
   // already set the refresh cookie. We force a refresh probe here to
   // pull a brand-new access token into memory and bounce home.
-  if (route.query.oidc === "done") {
+  if (route.query.oidc === "done" || route.query.saml === "done") {
     const user = await auth.tryRefresh();
     if (user) {
       const next = typeof route.query.next === "string" && route.query.next.startsWith("/")
@@ -133,6 +161,8 @@ onMounted(async () => {
   const cfg = await loadAuthConfig();
   oidcEnabled.value = !!cfg.oidcEnabled;
   oidcLabel.value   = cfg.oidcLabel || "Sign in with SSO";
+  samlEnabled.value = !!cfg.samlEnabled;
+  samlLabel.value   = cfg.samlLabel || "Sign in with SAML";
 });
 
 async function onSubmit() {
@@ -169,6 +199,18 @@ function onOidcClick() {
     ? route.query.next
     : "/";
   window.location.href = `/api/auth/oidc/login?next=${encodeURIComponent(next)}`;
+}
+
+function onSamlClick() {
+  const slug = samlWorkspaceSlug.value.trim().toLowerCase();
+  if (!slug) return;
+  // Persist for next time so a returning user doesn't retype.
+  try { localStorage.setItem("daisy.samlWorkspace", slug); } catch { /* private mode */ }
+  const next = typeof route.query.next === "string" && route.query.next.startsWith("/")
+    ? route.query.next
+    : "/";
+  const qs = new URLSearchParams({ workspace: slug, next });
+  window.location.href = `/api/auth/saml/login?${qs.toString()}`;
 }
 </script>
 

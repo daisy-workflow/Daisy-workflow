@@ -25,6 +25,7 @@ import resourceGrantsRouter from "./api/resourceGrants.js";
 import crossProjectGrantsRouter from "./api/crossProjectGrants.js";
 import quotasRouter from "./api/quotas.js";
 import jitGrantsRouter from "./api/jitGrants.js";
+import samlConfigsRouter from "./api/samlConfigs.js";
 import auditRouter from "./api/audit.js";
 import graphsRouter from "./api/graphs.js";
 import executionsRouter from "./api/executions.js";
@@ -35,6 +36,12 @@ import webhooksRouter from "./api/webhooks.js";
 import configsRouter from "./api/configs.js";
 import agentsRouter  from "./api/agents.js";
 import memoryRouter  from "./api/memory.js";
+import knowledgeBasesRouter from "./api/knowledgeBases.js";
+import guardrailsRouter from "./api/guardrails.js";
+import promptTemplatesRouter from "./api/promptTemplates.js";
+import evalsRouter from "./api/evals.js";
+import modelRoutesRouter from "./api/modelRoutes.js";
+import complianceRouter from "./api/compliance.js";
 import { attachWss } from "./ws/broadcast.js";
 
 await loadBuiltins();
@@ -50,6 +57,10 @@ app.use(cors({
   credentials: true,
 }));
 app.use(express.json({ limit: "1mb" }));
+// SAML IdP callbacks POST the assertion as application/x-www-form-urlencoded
+// (HTTP-POST binding). Bumped limit because signed SAMLResponse blobs
+// from cert-heavy IdPs sometimes break 250KB; 1MB matches the JSON cap.
+app.use(express.urlencoded({ limit: "1mb", extended: false }));
 app.use(cookieParser());
 app.use(morgan("tiny"));
 
@@ -92,6 +103,7 @@ app.use("/resource-grants",  resourceGrantsRouter);
 app.use("/cross-project-grants", crossProjectGrantsRouter);
 app.use("/quotas",               quotasRouter);
 app.use("/jit-grants",           jitGrantsRouter);
+app.use("/saml-config",          samlConfigsRouter);
 app.use("/audit", auditRouter);
 
 app.use("/graphs", graphsRouter);
@@ -102,6 +114,12 @@ app.use("/triggers", triggersRouter);
 app.use("/configs",  configsRouter);
 app.use("/agents",   agentsRouter);
 app.use("/memory",   memoryRouter);
+app.use("/kbs",      knowledgeBasesRouter);
+app.use("/guardrails", guardrailsRouter);
+app.use("/prompt-templates", promptTemplatesRouter);
+app.use("/evals", evalsRouter);
+app.use("/model-routes", modelRoutesRouter);
+app.use("/compliance",   complianceRouter);
 // Public webhook endpoint — bypasses /api proxy in dev because the path is
 // absolute (/webhooks/<id>). External services hit it directly.
 app.use("/webhooks", webhooksRouter);

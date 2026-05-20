@@ -90,19 +90,59 @@ export const TYPES = Object.freeze({
   "ai.provider": {
     label: "AI provider",
     description:
-      "API credentials for an LLM provider (Anthropic / OpenAI / Groq / etc). " +
-      "Referenced by the `agent` plugin via a stored agent's config name.",
+      "API credentials for an LLM provider. Referenced by the `agent` " +
+      "plugin via a stored agent's config name.",
     fields: [
       { name: "provider", type: "select", required: true,
-        options: ["anthropic", "openai"],
+        options: [
+          "anthropic",
+          "openai",
+          "azure-openai",
+          "gemini",
+          "bedrock",
+          "ollama",
+          // Embedding-only providers. The chat-agent dispatcher
+          // ignores these (no callProvider mapping) but the RAG
+          // embed pipeline can pick them up — keeping them in one
+          // config type means a user wiring up RAG uses the same
+          // form they already know.
+          "voyage",
+        ],
         default: "anthropic",
-        description: "Provider family. Drives the request shape (Anthropic Messages vs OpenAI Chat Completions)." },
-      { name: "apiKey",   type: "string", required: true, secret: true,
-        description: "API key. Encrypted at rest." },
+        description: "Provider family. Drives the request shape, endpoint, and credential format." },
+      { name: "apiKey",   type: "string", secret: true,
+        description: "API key. Encrypted at rest. Bedrock + Ollama may not need this — see provider-specific notes." },
       { name: "model",    type: "string", required: true,
-        description: "Model id (e.g. claude-haiku-4-5-20251001 or gpt-4o-mini)." },
+        description: "Model id. Examples: claude-sonnet-4-5-20250929, gpt-4o-mini, gemini-2.0-flash-001, anthropic.claude-3-5-sonnet-20241022-v2:0 (Bedrock), llama3.1:8b (Ollama)." },
       { name: "baseUrl",  type: "string",
-        description: "Optional override for the API endpoint. Defaults to the provider's standard URL." },
+        description: "Endpoint override. Required for ollama (e.g. http://localhost:11434/v1) and bedrock (e.g. https://bedrock-runtime.us-east-1.amazonaws.com)." },
+      // Provider-specific extras. We keep them all here rather than
+      // gate per-provider in the UI — the unused fields stay blank
+      // and the provider modules ignore them. Avoids a complex
+      // conditional schema.
+      { name: "azureDeployment", type: "string",
+        description: "Azure OpenAI only. The deployment name from your Azure portal (NOT the model name)." },
+      { name: "azureApiVersion", type: "string",
+        description: "Azure OpenAI only. e.g. 2024-08-01-preview. Defaults to a known-good version." },
+      { name: "awsRegion", type: "string",
+        description: "Bedrock only. e.g. us-east-1. AWS credential chain (env, IAM role) supplies the keys." },
+      { name: "awsAccessKeyId",     type: "string", secret: true,
+        description: "Bedrock only. Optional — leave blank to use the standard AWS credential chain." },
+      { name: "awsSecretAccessKey", type: "string", secret: true,
+        description: "Bedrock only. Optional — leave blank to use the standard AWS credential chain." },
+    ],
+  },
+  "vector.qdrant": {
+    label: "Qdrant vector store",
+    description:
+      "Connection details for a Qdrant server. Referenced by knowledge " +
+      "bases whose `kb_backend = qdrant`. Self-hosted Qdrant may not " +
+      "need an api key; Qdrant Cloud always does.",
+    fields: [
+      { name: "url", type: "string", required: true,
+        description: "Base URL of the Qdrant server. e.g. http://localhost:6333 or https://xyz-abc.eu-central.aws.cloud.qdrant.io" },
+      { name: "apiKey", type: "string", secret: true,
+        description: "Sent as the `api-key` header. Leave blank for unauthenticated self-hosted clusters." },
     ],
   },
   ssh: {

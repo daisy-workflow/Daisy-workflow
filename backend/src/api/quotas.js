@@ -18,6 +18,8 @@
 import { Router } from "express";
 import { pool } from "../db/pool.js";
 import { ValidationError } from "../utils/errors.js";
+// Note: micros→dollars conversion lives on the frontend so the API
+// stays integer-typed. Frontend divides cost_micros by 1_000_000.
 import { requireUser, requireProject } from "../middleware/auth.js";
 import { requirePermission } from "../auth/permissions.js";
 import { listSnapshots, KNOWN_KINDS } from "../auth/quotas.js";
@@ -36,6 +38,86 @@ router.get("/",
     try {
       const snapshots = await listSnapshots(req.user.projectId);
       res.json(snapshots);
+    } catch (e) { next(e); }
+  },
+);
+
+// ────────────────────────────────────────────────────────────────────
+// GET /quotas/usage/by-model — per-model breakdown for the active
+// project. Drives the "where did our tokens go" UI block on the
+// quotas page. Defaults to the current calendar month (matches the
+// tokens_per_month quota's bucket); ?days=N overrides.
+//
+// Returns one row per (provider, model) with totals + dollar cost.
+// ────────────────────────────────────────────────────────────────────
+router.get("/usage/by-model",
+  requirePermission("quota.read"),
+  async (req, res, next) => {
+    try {
+      const days = Number(req.query.days);
+      const since = Number.isFinite(days) && days > 0
+        ? `NOW() - INTERVAL '${Math.min(days, 365) | 0} days'`
+        : `date_trunc('month', NOW())`;
+      // Inline interval guarded by `(days | 0)` above so SQL injection
+      // can't slip through the template string — only ints in 0–365
+      // reach the query.
+      // ORDER BY uses the aggregate expressions directly rather than
+      // the SELECT-list aliases. Postgres resolves bare identifiers
+      // in ORDER BY to the underlying column first when one exists,
+      // which means `input_tokens` / `cost_micros` here would refer
+      // to the un-aggregated columns and trip the GROUP BY rule.
+      // Repeating SUM(...) is the unambiguous form.
+      const { rows } = await pool.query(
+        `SELECT provider, model,
+                COUNT(*)::int       AS calls,
+                SUM(CASE WHEN cache_hit THEN 1 ELSE 0 END)::int AS cache_hits,
+                SUM(input_tokens)::bigint  AS input_tokens,
+                SUM(output_tokens)::bigint AS output_tokens,
+                SUM(cost_micros)::bigint   AS cost_micros,
+                AVG(latency_ms) FILTER (WHERE NOT cache_hit) AS avg_latency_ms
+           FROM agent_token_events
+          WHERE project_id = $1
+            AND created_at >= ${since}
+          GROUP BY provider, model
+          ORDER BY SUM(cost_micros) DESC,
+                   SUM(input_tokens) + SUM(output_tokens) DESC`,
+        [req.user.projectId],
+      );
+      res.json({
+        sinceMode: Number.isFinite(days) && days > 0 ? `${days}d` : "month-to-date",
+        rows,
+      });
+    } catch (e) { next(e); }
+  },
+);
+
+// ────────────────────────────────────────────────────────────────────
+// GET /quotas/usage/by-agent — same shape, grouped by agent. Useful
+// for "which agent is eating the budget" diagnostics.
+// ────────────────────────────────────────────────────────────────────
+router.get("/usage/by-agent",
+  requirePermission("quota.read"),
+  async (req, res, next) => {
+    try {
+      const days = Number(req.query.days);
+      const since = Number.isFinite(days) && days > 0
+        ? `NOW() - INTERVAL '${Math.min(days, 365) | 0} days'`
+        : `date_trunc('month', NOW())`;
+      const { rows } = await pool.query(
+        `SELECT COALESCE(agent_title, '(deleted)') AS agent_title,
+                COUNT(*)::int       AS calls,
+                SUM(input_tokens)::bigint  AS input_tokens,
+                SUM(output_tokens)::bigint AS output_tokens,
+                SUM(cost_micros)::bigint   AS cost_micros
+           FROM agent_token_events
+          WHERE project_id = $1
+            AND created_at >= ${since}
+          GROUP BY COALESCE(agent_title, '(deleted)')
+          ORDER BY SUM(cost_micros) DESC
+          LIMIT 50`,
+        [req.user.projectId],
+      );
+      res.json({ rows });
     } catch (e) { next(e); }
   },
 );

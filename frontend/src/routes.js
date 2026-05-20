@@ -30,6 +30,7 @@ import CustomRolesPage      from "./pages/CustomRolesPage.vue";
 import CrossProjectGrantsPage from "./pages/CrossProjectGrantsPage.vue";
 import QuotasPage             from "./pages/QuotasPage.vue";
 import JitGrantsPage          from "./pages/JitGrantsPage.vue";
+import AdminPage              from "./pages/AdminPage.vue";
 import PropertyEditor from "./components/PropertyEditor.vue";
 
 import { auth } from "./stores/auth.js";
@@ -68,38 +69,26 @@ const routes = [
     meta: { roles: ["admin"] } },
   { path: "/plugins",                component: PluginsPage,       name: "plugins",
     meta: { roles: ["admin"] } },
-  { path: "/workspace",              component: WorkspaceSettings, name: "workspace" },
-  // Projects admin — workspace-admin only. The page itself does a
-  // role check on mount, but we also gate the route here so a
-  // non-admin's direct URL paste 404s instead of flashing the page.
-  { path: "/projects",               component: ProjectsPage,      name: "projects",
+  // Admin hub. Seven admin destinations (workspace settings, projects,
+  // service accounts, project plugins, custom roles, cross-project
+  // grants, quotas) all live behind /admin with a left-rail switcher.
+  // The legacy individual routes redirect into /admin?view=<key> so
+  // existing bookmarks and inbound links keep working.
+  { path: "/admin",                  component: AdminPage,         name: "admin" },
+  // Legacy aliases — preserved as redirects. Removing them outright
+  // would 404 every link in old emails / Slack threads / wiki pages.
+  { path: "/workspace",              redirect: { path: "/admin", query: { view: "workspace" } } },
+  { path: "/projects",               redirect: { path: "/admin", query: { view: "projects" } },
     meta: { roles: ["admin"] } },
-  // Service accounts admin — project-admin (admin role at project)
-  // OR workspace admin. The page itself + backend permissions also
-  // gate; the meta here just keeps viewers out of the URL.
-  { path: "/service-accounts",       component: ServiceAccountsPage, name: "serviceAccounts",
+  { path: "/service-accounts",       redirect: { path: "/admin", query: { view: "service-accounts" } },
     meta: { roles: ["admin", "editor"] } },
-  // Per-project plugin enablement — editors (workflow authors) need
-  // this to enable an integration before they can save a workflow
-  // that uses it. Viewers don't.
-  { path: "/project-plugins",        component: ProjectPluginsPage,  name: "projectPlugins",
+  { path: "/project-plugins",        redirect: { path: "/admin", query: { view: "project-plugins" } },
     meta: { roles: ["admin", "editor"] } },
-  // Custom roles admin — workspace-admin authors roles + workspace-
-  // and project-admins grant them. The page itself enforces
-  // workspace-admin for create/update/delete via the API permission
-  // gates; the meta keeps viewers out of the URL.
-  { path: "/custom-roles",           component: CustomRolesPage,     name: "customRoles",
+  { path: "/custom-roles",           redirect: { path: "/admin", query: { view: "custom-roles" } },
     meta: { roles: ["admin"] } },
-  // Cross-project workflow.fire grants — workspace admin only. The
-  // backend enforces `cross_project.grant`; the route guard keeps
-  // editors/viewers from even rendering the page.
-  { path: "/cross-project-grants",   component: CrossProjectGrantsPage, name: "crossProjectGrants",
+  { path: "/cross-project-grants",   redirect: { path: "/admin", query: { view: "cross-project-grants" } },
     meta: { roles: ["admin"] } },
-  // Project quotas — read-only for project admins/editors, mutable
-  // for workspace admins. Allow editors through the route guard since
-  // the page renders read-mode for them; the API enforces write
-  // permission server-side.
-  { path: "/quotas",                 component: QuotasPage,           name: "quotas",
+  { path: "/quotas",                 redirect: { path: "/admin", query: { view: "quotas" } },
     meta: { roles: ["admin", "editor"] } },
   // JIT elevations — workspace admin only. Page gate keeps editors/
   // viewers from rendering the table; the "mine" endpoint serves

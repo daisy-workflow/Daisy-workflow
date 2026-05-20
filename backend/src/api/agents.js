@@ -82,7 +82,8 @@ router.get("/:id", requireRole("admin", "editor", "viewer"), async (req, res, ne
 
 router.post("/", requireRole("admin", "editor"), async (req, res, next) => {
   try {
-    const { title, prompt, config_name, description, sharedAtWorkspace = false } = req.body || {};
+    const { title, prompt, config_name, description, sharedAtWorkspace = false,
+            guardrails_override, prompt_template_id } = req.body || {};
     validatePayload({ title, prompt, config_name }, /* requireAll */ true);
 
     // Only workspace admins can author workspace-shared agents — same
@@ -100,10 +101,12 @@ router.post("/", requireRole("admin", "editor"), async (req, res, next) => {
       await pool.query(
         `INSERT INTO agents (id, title, prompt, config_name, description,
                               workspace_id, project_id, shared_at_workspace,
-                              updated_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+                              guardrails_override, prompt_template_id, updated_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11)`,
         [id, title.trim(), prompt, config_name, description || null,
          req.user.workspaceId, projectIdToWrite, !!sharedAtWorkspace,
+         guardrails_override ? JSON.stringify(guardrails_override) : null,
+         prompt_template_id || null,
          req.user.id],
       );
     } catch (e) {
@@ -124,7 +127,8 @@ router.post("/", requireRole("admin", "editor"), async (req, res, next) => {
 
 router.put("/:id", requireRole("admin", "editor"), async (req, res, next) => {
   try {
-    const { title, prompt, config_name, description } = req.body || {};
+    const { title, prompt, config_name, description, guardrails_override,
+            prompt_template_id } = req.body || {};
     // Look up in either layer so shared agents are editable.
     const { rows: lookup } = await pool.query(
       `SELECT shared_at_workspace
@@ -152,6 +156,19 @@ router.put("/:id", requireRole("admin", "editor"), async (req, res, next) => {
     if (prompt      !== undefined) { params.push(prompt);       sets.push(`prompt = $${params.length}`); }
     if (config_name !== undefined) { params.push(config_name);  sets.push(`config_name = $${params.length}`); }
     if (description !== undefined) { params.push(description || null); sets.push(`description = $${params.length}`); }
+    // guardrails_override: null = clear the override, object = upsert,
+    // undefined = leave alone. The CAST keeps the column properly
+    // typed (JSONB).
+    if (guardrails_override !== undefined) {
+      params.push(guardrails_override ? JSON.stringify(guardrails_override) : null);
+      sets.push(`guardrails_override = $${params.length}::jsonb`);
+    }
+    // prompt_template_id: null = unbind (fall back to inline prompt),
+    // UUID = pin a template, undefined = leave alone.
+    if (prompt_template_id !== undefined) {
+      params.push(prompt_template_id || null);
+      sets.push(`prompt_template_id = $${params.length}`);
+    }
     if (sets.length === 0) return res.json({ id: req.params.id, updated: false });
     params.push(req.user.id);
     sets.push(`updated_by = $${params.length}`);

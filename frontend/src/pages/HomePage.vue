@@ -171,6 +171,25 @@
           @delete-selected="onDeleteSelectedConfigs"
         />
 
+        <!-- Knowledge bases (Phase B) — RAG vector stores per project.
+             Embedded-page pattern; the component carries its own
+             page-header so the home content-header stays blank. -->
+        <KnowledgeBasesPage v-else-if="activeKey === 'kbs'" />
+
+        <!-- Prompt templates (Phase D) — embedded page; the component
+             carries its own page-header, so the surrounding home
+             content-header is intentionally blank (label/subtitle = ""). -->
+        <PromptTemplatesPage v-else-if="activeKey === 'prompts'" />
+
+        <!-- Evals (Phase D) — suites + cases + run history. Same
+             embedded-page pattern as PromptTemplatesPage above. -->
+        <EvalsPage v-else-if="activeKey === 'evals'" />
+
+        <!-- Model routes (Phase E) — named indirections for swapping
+             agents without editing every workflow. Same embedded-page
+             pattern as the surfaces above. -->
+        <ModelRoutesPage v-else-if="activeKey === 'routes'" />
+
         <!-- Instances — every role sees the list; only admins can delete.
              A chip-style q-select sits above the table for filtering by
              tag. Empty filter passes all rows. Click a chip in the table
@@ -218,6 +237,14 @@ import AppTable from "../components/AppTable.vue";
 import TriggersTable from "../components/TriggersTable.vue";
 import OrchestratorChat from "../components/OrchestratorChat.vue";
 import PluginsPage from "./PluginsPage.vue"
+// Content-authoring surfaces that used to live under /admin. Moved
+// to the Home rail so editors don't detour through a governance
+// page to edit a prompt or run an eval — they sit alongside Agents
+// and Configurations.
+import KnowledgeBasesPage from "./KnowledgeBasesPage.vue"
+import PromptTemplatesPage from "./PromptTemplatesPage.vue"
+import EvalsPage from "./EvalsPage.vue"
+import ModelRoutesPage from "./ModelRoutesPage.vue"
 // File picker + download helpers — same utilities the FlowDesigner
 // uses for its single-flow Import/Export buttons.
 import { downloadText, pickFileAsText } from "../components/flow/flowModel.js";
@@ -248,6 +275,21 @@ const sections = [
     roles: ["admin", "editor"] },
   { key: "configs",   icon: "settings_input_component", label: "Configurations",
     tooltip: "Configurations",    subtitle: "Reusable credentials & connection settings.",
+    roles: ["admin", "editor"] },
+  // Empty label/subtitle — these pages render their own headers
+  // (same pattern as PluginsPage), and double-headers look awful.
+  // The rail's tooltip is the only label they need.
+  { key: "kbs",       icon: "library_books",    label: "",
+    tooltip: "Knowledge bases",   subtitle: "",
+    roles: ["admin", "editor"] },
+  { key: "prompts",   icon: "text_snippet",     label: "",
+    tooltip: "Prompt templates",  subtitle: "",
+    roles: ["admin", "editor"] },
+  { key: "evals",     icon: "fact_check",       label: "",
+    tooltip: "Evals",             subtitle: "",
+    roles: ["admin", "editor"] },
+  { key: "routes",    icon: "alt_route",        label: "",
+    tooltip: "Model routes",      subtitle: "",
     roles: ["admin", "editor"] },
   { key: "instances", icon: "monitor",          label: "Instances",
     tooltip: "Instances",         subtitle: "Live and historical workflow executions.",

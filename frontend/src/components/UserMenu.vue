@@ -121,33 +121,14 @@
 
           <q-separator />
 
-          <q-item clickable v-close-popup @click="goWorkspace">
+          <!-- Single Admin entry — opens /admin which hosts the rail
+               for workspace settings, projects, service accounts,
+               project plugins, custom roles, cross-project grants,
+               and quotas. Visible to everyone (workspace settings is
+               always-on, the rail filters the rest by role). -->
+          <q-item clickable v-close-popup @click="goAdmin">
             <q-item-section avatar><q-icon name="settings" /></q-item-section>
-            <q-item-section>Workspace settings</q-item-section>
-          </q-item>
-          <q-item v-if="isWorkspaceAdmin" clickable v-close-popup @click="goProjects">
-            <q-item-section avatar><q-icon name="folder_special" /></q-item-section>
-            <q-item-section>Projects</q-item-section>
-          </q-item>
-          <q-item clickable v-close-popup @click="goServiceAccounts">
-            <q-item-section avatar><q-icon name="vpn_key" /></q-item-section>
-            <q-item-section>Service accounts</q-item-section>
-          </q-item>
-          <q-item clickable v-close-popup @click="goProjectPlugins">
-            <q-item-section avatar><q-icon name="extension" /></q-item-section>
-            <q-item-section>Project plugins</q-item-section>
-          </q-item>
-          <q-item v-if="isWorkspaceAdmin" clickable v-close-popup @click="goCustomRoles">
-            <q-item-section avatar><q-icon name="admin_panel_settings" /></q-item-section>
-            <q-item-section>Custom roles</q-item-section>
-          </q-item>
-          <q-item v-if="isWorkspaceAdmin" clickable v-close-popup @click="goCrossProjectGrants">
-            <q-item-section avatar><q-icon name="swap_horiz" /></q-item-section>
-            <q-item-section>Cross-project grants</q-item-section>
-          </q-item>
-          <q-item clickable v-close-popup @click="goQuotas">
-            <q-item-section avatar><q-icon name="data_usage" /></q-item-section>
-            <q-item-section>Quotas</q-item-section>
+            <q-item-section>Admin</q-item-section>
           </q-item>
           <q-item v-if="isWorkspaceAdmin" clickable v-close-popup @click="goJitGrants">
             <q-item-section avatar><q-icon name="bolt" /></q-item-section>
@@ -352,17 +333,11 @@ async function onSwitchProject(p) {
   }
 }
 
-function goUsers()      { router.push({ name: "users" }); }
-function goAudit()      { router.push({ name: "audit" }); }
-function goPlugins()    { router.push({ name: "plugins" }); }
-function goWorkspace()  { router.push({ name: "workspace" }); }
-function goProjects()        { router.push({ name: "projects" }); }
-function goServiceAccounts() { router.push({ name: "serviceAccounts" }); }
-function goProjectPlugins()  { router.push({ name: "projectPlugins" }); }
-function goCustomRoles()         { router.push({ name: "customRoles" }); }
-function goCrossProjectGrants()  { router.push({ name: "crossProjectGrants" }); }
-function goQuotas()              { router.push({ name: "quotas" }); }
-function goJitGrants()           { router.push({ name: "jitGrants" }); }
+function goUsers()    { router.push({ name: "users" }); }
+function goAudit()    { router.push({ name: "audit" }); }
+function goPlugins()  { router.push({ name: "plugins" }); }
+function goAdmin()    { router.push({ name: "admin" }); }
+function goJitGrants(){ router.push({ name: "jitGrants" }); }
 
 async function onLogout() {
   await auth.logout();
