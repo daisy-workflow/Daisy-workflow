@@ -32,9 +32,36 @@ const authApi = axios.create({
   withCredentials: true,    // send the daisy_rt cookie on /auth/refresh
 });
 
+// RBAC v2: persist the active project id across reloads. We can't put
+// it in the JWT alone because the JWT lives in memory — the browser
+// reload would lose it. localStorage survives reloads; the request
+// interceptor reads `auth.activeProjectId` to attach X-Project-Id.
+const PROJECT_LS_KEY = "daisy.activeProjectId";
+function readActiveProject() {
+  try { return localStorage.getItem(PROJECT_LS_KEY) || null; }
+  catch { return null; }
+}
+function writeActiveProject(id) {
+  try {
+    if (id) localStorage.setItem(PROJECT_LS_KEY, id);
+    else    localStorage.removeItem(PROJECT_LS_KEY);
+  } catch { /* private mode — preference won't survive */ }
+}
+
 export const auth = reactive({
   token: null,
   user:  null,
+  // Currently-active project id. The request interceptor reads this
+  // and emits X-Project-Id on every API call. Persisted to
+  // localStorage so reloads land on the same project.
+  activeProjectId: readActiveProject(),
+  // RBAC v2: cached workspace-admin flag for the active workspace.
+  // Populated by ensureActiveProject() during boot. Pages and menu
+  // items read this synchronously instead of waiting on a fresh API
+  // round-trip — which would otherwise hide the "Projects" link
+  // (and bounce admins out of /service-accounts) during the
+  // few-hundred-ms window after login.
+  isWorkspaceAdmin: false,
   ready: false,             // boot probe complete
 
   /** True iff a logged-in user is loaded. */
@@ -42,12 +69,42 @@ export const auth = reactive({
     return !!(this.token && this.user);
   },
 
+  /**
+   * Switch the active project. Issues a new JWT with `proj` pointing
+   * at the target project, persists the choice to localStorage, and
+   * updates the in-memory token so the next API call carries the
+   * right context. Returns the project info.
+   */
+  async setActiveProject(projectId) {
+    // Dynamic import to avoid the auth-store ↔ api-client cycle —
+    // client.js imports auth, so auth importing client at top-level
+    // would self-reference at module init.
+    const { Projects } = await import("../api/client.js");
+    const result = await Projects.switch(projectId);
+    this.token = result.accessToken;
+    this.activeProjectId = result.project.id;
+    writeActiveProject(this.activeProjectId);
+    return result.project;
+  },
+
+  /**
+   * Forget the active project. Called on logout and when the project
+   * the UI was pointing at disappears (e.g. soft-deleted by an admin).
+   */
+  clearActiveProject() {
+    this.activeProjectId = null;
+    writeActiveProject(null);
+  },
+
   /** Login with email + password. On success the access token + user
-   *  are placed in state and the refresh cookie is set by the server. */
+   *  are placed in state and the refresh cookie is set by the server.
+   *  Also primes the active project so the next page-load doesn't
+   *  bounce on missing context. */
   async login(email, password) {
     const { data } = await authApi.post("/auth/login", { email, password });
     this.token = data.accessToken;
     this.user  = data.user;
+    await this.ensureActiveProject();
     return data.user;
   },
 
@@ -91,13 +148,60 @@ export const auth = reactive({
     catch { /* ignore — we still want to clear local state */ }
     this.token = null;
     this.user  = null;
+    this.isWorkspaceAdmin = false;
+    this.clearActiveProject();
+  },
+
+  /**
+   * Make sure an active project is set + load the workspace-admin
+   * flag. Called from boot() and after a workspace switch. Safe to
+   * call repeatedly — when activeProjectId is already valid in the
+   * current workspace, we just refresh the isWorkspaceAdmin flag.
+   *
+   * Why centralise this: pages that need a project context (service
+   * accounts, project plugins, the home flow list) used to race
+   * with UserMenu's auto-select. By picking a default at boot the
+   * window is closed — every page mount sees a valid activeProjectId.
+   *
+   * Returns the chosen project id, or null when the user has no
+   * projects (shouldn't happen — migrate seeds a Default project).
+   */
+  async ensureActiveProject() {
+    if (!this.isAuthenticated) return null;
+    // Late, dynamic import to avoid the api-client ↔ auth-store cycle.
+    const { Projects } = await import("../api/client.js");
+    let data;
+    try { data = await Projects.list(); }
+    catch { return null; }
+    this.isWorkspaceAdmin = !!data.isWorkspaceAdmin;
+    const projects = data.projects || [];
+
+    // Honour the stored choice when it's still valid in this workspace.
+    const stored = this.activeProjectId
+      && projects.some(p => p.id === this.activeProjectId);
+    if (stored) return this.activeProjectId;
+
+    // Otherwise pick a sensible default: the slug-"default" project
+    // if present, else the alphabetically-first one.
+    const pick = projects.find(p => p.slug === "default") || projects[0];
+    if (!pick) return null;
+    try {
+      await this.setActiveProject(pick.id);
+      return pick.id;
+    } catch {
+      return null;
+    }
   },
 
   /** Boot probe — tries to silently restore a session via the
-   *  refresh cookie. Always sets `ready=true` when done so the
-   *  router guard can stop waiting. */
+   *  refresh cookie, then picks a default project so every page has
+   *  a context to work with. Always sets `ready=true` when done so
+   *  the router guard can stop waiting. */
   async boot() {
     await this.tryRefresh();
+    if (this.isAuthenticated) {
+      await this.ensureActiveProject();
+    }
     this.ready = true;
   },
 

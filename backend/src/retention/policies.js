@@ -156,6 +156,61 @@ export async function pruneConversationHistory({
   );
 }
 
+/**
+ * Hard-delete soft-deleted projects whose 30-day restore window has
+ * elapsed. The Projects API soft-deletes by setting `deleted_at` +
+ * `purge_at = NOW() + 30 days`; this policy is the runner that
+ * actually removes the rows once that deadline passes.
+ *
+ * On hard delete, every owned resource cascades:
+ *   • graphs, triggers, configs, agents, executions, memories,
+ *     service_accounts, api_keys, project_quotas, quota_usage,
+ *     project_plugin_grants, cross_project_call_grants
+ *
+ * That's all wired by the FK constraints in migrations 021 + 022 with
+ * ON DELETE CASCADE. We just remove the project row and Postgres
+ * handles the rest.
+ *
+ * Also expires JIT grants whose project disappears — those rows have
+ * scope_id pointing at the project, no FK, so we sweep them in the
+ * same statement.
+ */
+export async function purgeDeletedProjects({
+  limit = 1_000,
+} = {}) {
+  // Two-step: find the candidate ids first so we can also clean up the
+  // unconstrained jit_grants references. A LEFT-JOIN delete would be
+  // less explicit and Postgres' DELETE FROM ... USING ... doesn't
+  // play nicely with chained cleanups.
+  const { rows: targets } = await pool.query(
+    `SELECT id FROM projects
+      WHERE deleted_at IS NOT NULL
+        AND purge_at   IS NOT NULL
+        AND purge_at   < NOW()
+      ORDER BY purge_at
+      LIMIT $1`,
+    [limit],
+  );
+  if (targets.length === 0) return 0;
+  const ids = targets.map(r => r.id);
+
+  // Drop jit_grants where the scope was project-level — these don't
+  // have an FK to projects.id, so a plain CASCADE on projects misses
+  // them. Cheap unconditional sweep keyed on the id list.
+  await pool.query(
+    `DELETE FROM jit_grants
+      WHERE scope_type = 'project' AND scope_id = ANY($1::uuid[])`,
+    [ids],
+  );
+
+  // Hard-delete the projects. FK cascades wipe every owned resource.
+  const r = await pool.query(
+    `DELETE FROM projects WHERE id = ANY($1::uuid[])`,
+    [ids],
+  );
+  return r.rowCount || 0;
+}
+
 // ────────────────────────────────────────────────────────────────────
 // Internal — run a DELETE and return rowCount.
 //

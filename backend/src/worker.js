@@ -144,7 +144,7 @@ async function processExecutionBody(job, span) {
   // (Older rows may only have it in `context`; fall back if `inputs` is empty.)
   // Also pull workspace_id so we can scope config + memory loads to it.
   const { rows: ctxRows } = await pool.query(
-    "SELECT inputs, context, workspace_id FROM executions WHERE id=$1", [executionId],
+    "SELECT inputs, context, workspace_id, project_id FROM executions WHERE id=$1", [executionId],
   );
   const inputsRow = ctxRows[0]?.inputs;
   const userContext =
@@ -152,6 +152,7 @@ async function processExecutionBody(job, span) {
       ? inputsRow
       : (ctxRows[0]?.context || {});
   const workspaceId = ctxRows[0]?.workspace_id || null;
+  const projectId   = ctxRows[0]?.project_id   || null;
 
   // Batch mode: if the user-supplied input is { items: [...] } OR a bare array,
   // run the whole DAG once per item. Otherwise treat it as a single-run object.
@@ -169,7 +170,10 @@ async function processExecutionBody(job, span) {
   //                                     env-var-flavoured access
   // Failure to load configs (DB down, missing table) leaves both as empty
   // objects so the rest of the run can still proceed.
-  const configsMap = await loadConfigsMap(workspaceId).catch((e) => {
+  // RBAC v2: configs resolve in two layers — project-private wins on
+  // a name collision, workspace-shared fills in the rest. Worker now
+  // passes both ids; the loader does the SQL-level overlay.
+  const configsMap = await loadConfigsMap(workspaceId, projectId).catch((e) => {
     log.warn("configs load failed; continuing with empty config", { error: e.message });
     return {};
   });
@@ -192,7 +196,7 @@ async function processExecutionBody(job, span) {
   // Identity so plugins (e.g. memory plugins, the agent's history
   // helpers) know which workflow they're running under without
   // poking back at the queue payload.
-  initialData.execution = { id: executionId, graphId, workspaceId };
+  initialData.execution = { id: executionId, graphId, workspaceId, projectId };
 
   // Carry the parsed workflow header onto ctx so plugins can read
   // workflow-level overrides like maxTokens / maxIterations without

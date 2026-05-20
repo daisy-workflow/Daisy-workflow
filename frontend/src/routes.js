@@ -23,6 +23,13 @@ import UsersPage      from "./pages/UsersPage.vue";
 import AuditPage      from "./pages/AuditPage.vue";
 import PluginsPage    from "./pages/PluginsPage.vue";
 import WorkspaceSettings from "./pages/WorkspaceSettings.vue";
+import ProjectsPage      from "./pages/ProjectsPage.vue";
+import ServiceAccountsPage from "./pages/ServiceAccountsPage.vue";
+import ProjectPluginsPage   from "./pages/ProjectPluginsPage.vue";
+import CustomRolesPage      from "./pages/CustomRolesPage.vue";
+import CrossProjectGrantsPage from "./pages/CrossProjectGrantsPage.vue";
+import QuotasPage             from "./pages/QuotasPage.vue";
+import JitGrantsPage          from "./pages/JitGrantsPage.vue";
 import PropertyEditor from "./components/PropertyEditor.vue";
 
 import { auth } from "./stores/auth.js";
@@ -36,7 +43,7 @@ const routes = [
   // roles allowed to write the underlying resource — that mirrors the
   // backend role policy (PR 2) so the UI never lets a viewer wander
   // onto a page where every save will 403.
-  { path: "/",                       component: HomePage },
+  { path: "/",                       component: HomePage,          name: "home" },
   { path: "/test",                   component: PropertyEditor },
   // Visual mode (canvas) and code mode (JSON editor) are two separate
   // top-level views — they never render side-by-side, so they don't fight
@@ -62,6 +69,43 @@ const routes = [
   { path: "/plugins",                component: PluginsPage,       name: "plugins",
     meta: { roles: ["admin"] } },
   { path: "/workspace",              component: WorkspaceSettings, name: "workspace" },
+  // Projects admin — workspace-admin only. The page itself does a
+  // role check on mount, but we also gate the route here so a
+  // non-admin's direct URL paste 404s instead of flashing the page.
+  { path: "/projects",               component: ProjectsPage,      name: "projects",
+    meta: { roles: ["admin"] } },
+  // Service accounts admin — project-admin (admin role at project)
+  // OR workspace admin. The page itself + backend permissions also
+  // gate; the meta here just keeps viewers out of the URL.
+  { path: "/service-accounts",       component: ServiceAccountsPage, name: "serviceAccounts",
+    meta: { roles: ["admin", "editor"] } },
+  // Per-project plugin enablement — editors (workflow authors) need
+  // this to enable an integration before they can save a workflow
+  // that uses it. Viewers don't.
+  { path: "/project-plugins",        component: ProjectPluginsPage,  name: "projectPlugins",
+    meta: { roles: ["admin", "editor"] } },
+  // Custom roles admin — workspace-admin authors roles + workspace-
+  // and project-admins grant them. The page itself enforces
+  // workspace-admin for create/update/delete via the API permission
+  // gates; the meta keeps viewers out of the URL.
+  { path: "/custom-roles",           component: CustomRolesPage,     name: "customRoles",
+    meta: { roles: ["admin"] } },
+  // Cross-project workflow.fire grants — workspace admin only. The
+  // backend enforces `cross_project.grant`; the route guard keeps
+  // editors/viewers from even rendering the page.
+  { path: "/cross-project-grants",   component: CrossProjectGrantsPage, name: "crossProjectGrants",
+    meta: { roles: ["admin"] } },
+  // Project quotas — read-only for project admins/editors, mutable
+  // for workspace admins. Allow editors through the route guard since
+  // the page renders read-mode for them; the API enforces write
+  // permission server-side.
+  { path: "/quotas",                 component: QuotasPage,           name: "quotas",
+    meta: { roles: ["admin", "editor"] } },
+  // JIT elevations — workspace admin only. Page gate keeps editors/
+  // viewers from rendering the table; the "mine" endpoint serves
+  // them via the user menu's "elevated access" indicator.
+  { path: "/jit-grants",             component: JitGrantsPage,        name: "jitGrants",
+    meta: { roles: ["admin"] } },
 ];
 
 export const router = createRouter({

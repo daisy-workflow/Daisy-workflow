@@ -21,27 +21,43 @@ import { decryptSecrets } from "./registry.js";
 import { log } from "../utils/logger.js";
 
 /**
- * Load configs scoped to a single workspace, decrypt secret fields,
+ * Load configs scoped to a workspace + project, decrypt secret fields,
  * and return as a map keyed by config `name`. Errors on individual
  * rows are logged and that row is skipped — one broken config
  * shouldn't stop the run.
  *
- * `workspaceId` is required as of PR 2 (auth + multi-tenancy). The
- * engine, the trigger manager, and any other caller passes the
- * execution's owning workspace; if the param is omitted the function
- * returns an empty map and logs a warning rather than leaking every
- * workspace's configs into ctx.config.
+ * RBAC v2 resolution:
+ *   • Project-private configs (project_id = $2) take precedence on a
+ *     name collision. Lets a project override a shared default.
+ *   • Workspace-shared configs (project_id IS NULL AND
+ *     shared_at_workspace = true) fill in the gaps. The org's SSO
+ *     credentials, company-wide SMTP relay, etc. live here.
+ *
+ * `workspaceId` is required. `projectId` is optional — callers that
+ * don't have a project context (e.g. the workspace-level config-list
+ * API used by the admin UI before a project is picked) get the
+ * project-private layer skipped and ALL workspace-shared rows.
  */
-export async function loadConfigsMap(workspaceId) {
+export async function loadConfigsMap(workspaceId, projectId = null) {
   const out = {};
   if (!workspaceId) {
     log.warn("loadConfigsMap called without workspaceId — returning empty map");
     return out;
   }
   try {
+    // DISTINCT ON (name) + ORDER BY project-private DESC ⇒ when the
+    // same name exists in both layers, the project-private row wins.
+    // When only one layer has it, we get that one.
     const { rows } = await pool.query(
-      "SELECT name, type, data FROM configs WHERE workspace_id = $1",
-      [workspaceId],
+      `SELECT DISTINCT ON (name) name, type, data
+         FROM configs
+        WHERE workspace_id = $1
+          AND (
+                (project_id = $2)
+             OR (project_id IS NULL AND shared_at_workspace = true)
+          )
+        ORDER BY name, (project_id = $2) DESC NULLS LAST`,
+      [workspaceId, projectId],
     );
     // Decrypt all rows in parallel — each KMS call is ~10ms, and we
     // do this once per execution so even at 50 configs the wall-clock

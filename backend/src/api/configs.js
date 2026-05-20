@@ -22,7 +22,7 @@
 import { Router } from "express";
 import { v4 as uuid } from "uuid";
 import { pool } from "../db/pool.js";
-import { ValidationError, NotFoundError } from "../utils/errors.js";
+import { ValidationError, NotFoundError, ForbiddenError } from "../utils/errors.js";
 import {
   TYPES,
   listTypes,
@@ -32,7 +32,7 @@ import {
   decryptSecrets,
   maskSecrets,
 } from "../configs/registry.js";
-import { requireUser, requireRole } from "../middleware/auth.js";
+import { requireUser, requireRole, requireProject } from "../middleware/auth.js";
 import { auditLog } from "../audit/log.js";
 import { resyncTriggersUsingConfig } from "../triggers/manager.js";
 import { evictMqttClient } from "../plugins/mqtt/util.js";
@@ -58,25 +58,44 @@ const NAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 
 // ──────────────────────────────────────────────────────────────────────────
 // Type registry — drives the frontend ConfigDesigner UI.
+// Catalog endpoint — no project context required.
 // ──────────────────────────────────────────────────────────────────────────
 router.get("/types", requireRole("admin", "editor"), (_req, res) => {
   res.json(listTypes());
 });
+
+// RBAC v2: everything below scopes by (workspace, project). Workspace-
+// shared configs (project_id IS NULL AND shared_at_workspace = true)
+// land in Phase 3 — for now every config is project-private, the
+// query filters require BOTH workspace + project to match. The
+// schema's project_id column is nullable to make the shared case
+// possible later, but inserts here always supply a value.
+router.use(requireProject);
 
 // ──────────────────────────────────────────────────────────────────────────
 // List — secrets masked.
 // ──────────────────────────────────────────────────────────────────────────
 router.get("/", requireRole("admin", "editor"), async (req, res, next) => {
   try {
+    // Configs surface project-private rows + workspace-shared rows in
+    // one list. The shared flag travels with the row so the UI can
+    // render a chip and decide whether to show edit/delete affordances
+    // (workspace-admin only for shared rows).
     const { rows } = await pool.query(
       `SELECT c.id, c.name, c.type, c.description, c.data,
+              c.shared_at_workspace,
+              c.project_id,
               c.created_at, c.updated_at, c.updated_by,
               COALESCE(u.display_name, u.email) AS updated_by_email
          FROM configs c
          LEFT JOIN users u ON u.id = c.updated_by
         WHERE c.workspace_id = $1
-        ORDER BY c.name`,
-      [req.user.workspaceId],
+          AND (
+                c.project_id = $2
+             OR (c.project_id IS NULL AND c.shared_at_workspace = true)
+          )
+        ORDER BY c.shared_at_workspace, c.name`,
+      [req.user.workspaceId, req.user.projectId],
     );
     res.json(rows.map(r => ({
       ...r,
@@ -90,12 +109,20 @@ router.get("/", requireRole("admin", "editor"), async (req, res, next) => {
 // ──────────────────────────────────────────────────────────────────────────
 router.get("/:id", requireRole("admin", "editor"), async (req, res, next) => {
   try {
+    // Same overlay as the list — a single row lookup needs to accept
+    // both layers, otherwise the UI can't open a shared config when
+    // a project is active.
     const { rows } = await pool.query(
       `SELECT c.*, COALESCE(u.display_name, u.email) AS updated_by_email
          FROM configs c
          LEFT JOIN users u ON u.id = c.updated_by
-        WHERE c.id=$1 AND c.workspace_id=$2`,
-      [req.params.id, req.user.workspaceId],
+        WHERE c.id=$1
+          AND c.workspace_id=$2
+          AND (
+                c.project_id = $3
+             OR (c.project_id IS NULL AND c.shared_at_workspace = true)
+          )`,
+      [req.params.id, req.user.workspaceId, req.user.projectId],
     );
     if (rows.length === 0) throw new NotFoundError("config");
     const row = rows[0];
@@ -108,39 +135,58 @@ router.get("/:id", requireRole("admin", "editor"), async (req, res, next) => {
 // ──────────────────────────────────────────────────────────────────────────
 router.post("/", requireRole("admin"), async (req, res, next) => {
   try {
-    const { name, type, description = "", data = {} } = req.body || {};
+    const { name, type, description = "", data = {}, sharedAtWorkspace = false } = req.body || {};
     if (!name) throw new ValidationError("name required");
     if (!NAME_RE.test(name)) {
       throw new ValidationError(`invalid name: "${name}" — use letters, digits, _, - (must start with a letter or _)`);
     }
     if (!TYPES[type]) throw new ValidationError(`unknown type: "${type}"`);
 
+    // Workspace-shared configs are owned by the workspace as a whole.
+    // Only workspace admins can author them — a project admin who's
+    // not also a workspace admin can't promote a project secret into
+    // a shared one, which would otherwise be a privilege escalation.
+    if (sharedAtWorkspace) {
+      if (!await isWorkspaceAdmin(req.user.id, req.user.workspaceId)) {
+        throw new ForbiddenError("only workspace admins can create workspace-shared configs");
+      }
+    }
+
     const normalised = validateAndNormalize(type, stripMaskedSecrets(type, data));
-    // Carry the freeform "this key is secret" marker through validation if
-    // present (validateAndNormalize for generic returns the data as-is).
     if (TYPES[type].freeform && data?.__secret) normalised.__secret = data.__secret;
 
-    // Async because envelope encryption may go through a remote KMS.
     const { data: stored, encryption_version, kek_id } =
       await encryptSecrets(type, normalised);
 
     const id = uuid();
+    // Shared configs carry project_id=NULL. Private configs carry the
+    // caller's active project. shared_at_workspace flag mirrors the
+    // intent so a future SELECT can index on it without needing the
+    // (project_id IS NULL) sentinel check.
+    const projectIdToWrite = sharedAtWorkspace ? null : req.user.projectId;
     try {
       await pool.query(
-        `INSERT INTO configs (id, name, type, description, data, encryption_version, kek_id, workspace_id, updated_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [id, name, type, description || "", JSON.stringify(stored), encryption_version, kek_id, req.user.workspaceId, req.user.id],
+        `INSERT INTO configs (id, name, type, description, data,
+                              encryption_version, kek_id,
+                              workspace_id, project_id, shared_at_workspace,
+                              updated_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [id, name, type, description || "", JSON.stringify(stored),
+         encryption_version, kek_id,
+         req.user.workspaceId, projectIdToWrite, !!sharedAtWorkspace,
+         req.user.id],
       );
     } catch (e) {
       if (e.code === "23505") throw new ValidationError(`config name "${name}" already exists`);
       throw e;
     }
     await auditLog({
-      req, action: "config.create",
+      req, action: sharedAtWorkspace ? "config.create.shared" : "config.create",
       resource: { type: "config", id, name },
-      metadata: { configType: type },
+      projectId: projectIdToWrite,
+      metadata: { configType: type, sharedAtWorkspace: !!sharedAtWorkspace },
     });
-    res.status(201).json({ id, name });
+    res.status(201).json({ id, name, sharedAtWorkspace: !!sharedAtWorkspace });
   } catch (e) { next(e); }
 });
 
@@ -156,12 +202,27 @@ router.put("/:id", requireRole("admin"), async (req, res, next) => {
   try {
     const { name, description, data } = req.body || {};
 
+    // Look up the config in either layer. Shared rows (project_id IS
+    // NULL + shared_at_workspace = true) must be editable from any
+    // project context, gated by workspace-admin role below.
     const { rows } = await pool.query(
-      "SELECT * FROM configs WHERE id=$1 AND workspace_id=$2",
-      [req.params.id, req.user.workspaceId],
+      `SELECT * FROM configs
+        WHERE id=$1 AND workspace_id=$2
+          AND (
+                project_id = $3
+             OR (project_id IS NULL AND shared_at_workspace = true)
+          )`,
+      [req.params.id, req.user.workspaceId, req.user.projectId],
     );
     if (rows.length === 0) throw new NotFoundError("config");
     const existing = rows[0];
+
+    // Workspace-shared rows: only the workspace admin can mutate.
+    if (existing.shared_at_workspace) {
+      if (!await isWorkspaceAdmin(req.user.id, req.user.workspaceId)) {
+        throw new ForbiddenError("workspace-shared configs can only be edited by workspace admins");
+      }
+    }
 
     if (name !== undefined && name !== existing.name && !NAME_RE.test(name)) {
       throw new ValidationError(`invalid name: "${name}"`);
@@ -201,8 +262,12 @@ router.put("/:id", requireRole("admin"), async (req, res, next) => {
     const wsIdx = params.length;
     sets.push("updated_at = NOW()");
     try {
+      // Update by id within the workspace — the visibility check above
+      // already proved the row is accessible to this caller in either
+      // layer. No need to filter on project_id here.
       await pool.query(
-        `UPDATE configs SET ${sets.join(", ")} WHERE id = $${idIdx} AND workspace_id = $${wsIdx}`,
+        `UPDATE configs SET ${sets.join(", ")}
+          WHERE id = $${idIdx} AND workspace_id = $${wsIdx}`,
         params,
       );
     } catch (e) {
@@ -212,6 +277,7 @@ router.put("/:id", requireRole("admin"), async (req, res, next) => {
     await auditLog({
       req, action: "config.update",
       resource: { type: "config", id: req.params.id, name: name ?? existing.name },
+      projectId: req.user.projectId,
     });
 
     // Side-effects: subscriptions / connection pools may now reference
@@ -273,11 +339,20 @@ router.put("/:id", requireRole("admin"), async (req, res, next) => {
 router.post("/:id/rotate", requireRole("admin"), async (req, res, next) => {
   try {
     const { rows } = await pool.query(
-      "SELECT * FROM configs WHERE id=$1 AND workspace_id=$2",
-      [req.params.id, req.user.workspaceId],
+      `SELECT * FROM configs
+        WHERE id=$1 AND workspace_id=$2
+          AND (
+                project_id = $3
+             OR (project_id IS NULL AND shared_at_workspace = true)
+          )`,
+      [req.params.id, req.user.workspaceId, req.user.projectId],
     );
     if (rows.length === 0) throw new NotFoundError("config");
     const existing = rows[0];
+    if (existing.shared_at_workspace
+        && !await isWorkspaceAdmin(req.user.id, req.user.workspaceId)) {
+      throw new ForbiddenError("workspace-shared configs can only be rotated by workspace admins");
+    }
 
     // Decrypt to plaintext using whatever scheme the row is currently on.
     const plaintext = await decryptSecrets(existing.type, existing.data || {});
@@ -299,11 +374,13 @@ router.post("/:id/rotate", requireRole("admin"), async (req, res, next) => {
               updated_at = NOW(),
               updated_by = $6
         WHERE id = $1 AND workspace_id = $5`,
-      [existing.id, JSON.stringify(stored), encryption_version, kek_id, req.user.workspaceId, req.user.id],
+      [existing.id, JSON.stringify(stored), encryption_version, kek_id,
+       req.user.workspaceId, req.user.id],
     );
     await auditLog({
       req, action: "config.rotate",
       resource: { type: "config", id: existing.id, name: existing.name },
+      projectId: req.user.projectId,
       metadata: {
         from_version: existing.encryption_version,
         to_version:   encryption_version,
@@ -327,11 +404,21 @@ router.delete("/:id", requireRole("admin"), async (req, res, next) => {
   try {
     // Capture the row BEFORE deleting so we know what to evict / resync.
     const { rows: pre } = await pool.query(
-      "SELECT name, type, data FROM configs WHERE id=$1 AND workspace_id=$2",
-      [req.params.id, req.user.workspaceId],
+      `SELECT name, type, data, shared_at_workspace
+         FROM configs
+        WHERE id=$1 AND workspace_id=$2
+          AND (
+                project_id = $3
+             OR (project_id IS NULL AND shared_at_workspace = true)
+          )`,
+      [req.params.id, req.user.workspaceId, req.user.projectId],
     );
     if (pre.length === 0) throw new NotFoundError("config");
     const existing = pre[0];
+    if (existing.shared_at_workspace
+        && !await isWorkspaceAdmin(req.user.id, req.user.workspaceId)) {
+      throw new ForbiddenError("workspace-shared configs can only be deleted by workspace admins");
+    }
 
     const { rowCount } = await pool.query(
       "DELETE FROM configs WHERE id=$1 AND workspace_id=$2",
@@ -341,6 +428,7 @@ router.delete("/:id", requireRole("admin"), async (req, res, next) => {
     await auditLog({
       req, action: "config.delete",
       resource: { type: "config", id: req.params.id, name: existing.name },
+      projectId: req.user.projectId,
     });
 
     // Same side-effects as PUT: triggers referencing this name need to
@@ -384,6 +472,29 @@ function stripMaskedSecrets(type, data) {
     if (out[k] === "***") delete out[k];
   }
   return out;
+}
+
+/**
+ * Workspace-admin check. Mirrors the helper in projects.js — both
+ * surfaces need to gate sharing-promotion actions on real workspace
+ * admin rights, not just whatever role the caller happens to have in
+ * their currently-active project.
+ */
+async function isWorkspaceAdmin(userId, workspaceId) {
+  const { rows } = await pool.query(
+    `SELECT role FROM workspace_members
+      WHERE user_id = $1 AND workspace_id = $2
+      LIMIT 1`,
+    [userId, workspaceId],
+  );
+  if (rows.length && rows[0].role === "admin") return true;
+  const { rows: u } = await pool.query(
+    `SELECT 1 FROM users
+      WHERE id = $1 AND workspace_id = $2 AND role = 'admin'
+      LIMIT 1`,
+    [userId, workspaceId],
+  );
+  return u.length > 0;
 }
 
 /** Merge a PATCH-style partial onto the existing stored row. Secret fields

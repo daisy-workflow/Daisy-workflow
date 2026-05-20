@@ -114,6 +114,7 @@ export default {
     const historyLimit  = input.historyLimit ?? 20;
     const scopeId       = ctx?.execution?.graphId || null;
     const workspaceId   = ctx?.execution?.workspaceId;
+    const projectId     = ctx?.execution?.projectId;
 
     // Memory load: pull prior turns into a `messages` array. Empty when
     // conversationId is unset or historyLimit is 0.
@@ -127,6 +128,28 @@ export default {
         })
       : [];
     const messages = [...history, { role: "user", content: userText }];
+
+    // RBAC v2 quota: refuse the call when the project has hit its
+    // monthly token cap. This is a pre-call check; the post-call
+    // increment lives below. Pre-call avoids spending tokens we know
+    // we can't account for, even though "we exceeded slightly because
+    // of races" is acceptable when several concurrent calls slip
+    // through together. Same fire-and-late-import pattern as the
+    // increment side to keep the boot path clean.
+    if (projectId) {
+      try {
+        const { assertQuota } = await import("../../auth/quotas.js");
+        await assertQuota(projectId, "tokens_per_month");
+      } catch (e) {
+        if (e.code === "QUOTA_EXCEEDED") {
+          // Surface as a normal node-level error. The executor's
+          // failure path will record it on the node + halt the run.
+          throw e;
+        }
+        // Other errors (DB unreachable) are noisy; treat as
+        // permissive — quota tracking shouldn't bring down the engine.
+      }
+    }
 
     const onText = hooks?.stream?.text ? (chunk) => hooks.stream.text(chunk) : null;
     if (hooks?.stream?.log) {
@@ -158,6 +181,23 @@ export default {
     const inTok  = Number(usage?.inputTokens)  || 0;
     const outTok = Number(usage?.outputTokens) || 0;
     chargeTokens(ctx, ctx?._parsed, inTok + outTok);
+
+    // RBAC v2 quota: charge the project's monthly token budget.
+    // Fire-and-forget on the increment — quota tracking shouldn't
+    // delay the user's response. The next agent call (or workflow
+    // enqueue) re-reads the running total before deciding to proceed.
+    if (projectId) {
+      // Dynamic import avoids the engine ↔ auth dependency cycle: this
+      // plugin file is loaded inside the worker boot path, and pulling
+      // auth/quotas at module-init pulls all of auth which itself
+      // touches DB pool init. Late import is cheap (cached) and keeps
+      // boot ordering deterministic.
+      try {
+        const { incrementUsage } = await import("../../auth/quotas.js");
+        incrementUsage(projectId, "tokens_per_month", inTok + outTok)
+          .catch(() => { /* swallowed inside the helper */ });
+      } catch { /* ignore — telemetry-grade */ }
+    }
 
     // Memory store: if conversationId is set AND storeConversation is true,
     // append both turns. Two rows so a future load reconstructs the

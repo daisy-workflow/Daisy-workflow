@@ -59,6 +59,25 @@
                             : "Run with input"
                     }}</q-tooltip>
                 </q-btn>
+                <!-- Share — opens the per-resource grants dialog so an
+                     editor / project admin can give specific users
+                     read / run access to this one workflow without
+                     adding them to the whole project. Hidden until
+                     the workflow has been saved at least once (no id
+                     to attach grants to before that). -->
+                <q-btn
+                    flat round dense
+                    icon="share"
+                    class="btn-icon"
+                    :disable="isNew"
+                    @click="shareOpen = true"
+                >
+                    <q-tooltip>{{
+                        isNew
+                            ? "Save the flow once before sharing"
+                            : "Share with specific users"
+                    }}</q-tooltip>
+                </q-btn>
                 <q-btn
                     flat round dense
                     icon="save"
@@ -133,6 +152,17 @@
                 <!-- Run dialog — collects optional JSON input then enqueues -->
                 <RunDialog v-model="runDialogOpen" :initial="lastRunInput" @submit="onRunSubmit" />
 
+                <!-- Share dialog — per-workflow ACL overlay. Lazy
+                     instantiation: only mounted when the user opens it,
+                     so unsaved workflows pay zero cost. -->
+                <ShareResourceDialog
+                    v-if="!isNew"
+                    v-model:open="shareOpen"
+                    resource-type="workflow"
+                    :resource-id="route.params.id"
+                    :resource-name="model.name"
+                />
+
                 <!-- History drawer — lists archive snapshots, restore in one click -->
                 <q-dialog v-model="historyOpen" position="right" full-height>
                     <q-card style="width: 360px; max-width: 92vw;" class="column no-wrap">
@@ -200,6 +230,7 @@ import CanvasTab from "../components/flow/CanvasTab.vue";
 import DslEditorTab from "../components/flow/DslEditorTab.vue";
 import JsonTab from "../components/flow/JsonTab.vue";
 import RunDialog from "../components/RunDialog.vue";
+import ShareResourceDialog from "../components/ShareResourceDialog.vue";
 import {
     emptyModel,
     parseDslToModel,
@@ -252,6 +283,7 @@ const plugins = ref([]);
 // `lastRunInput` is the last successful payload, prefilled into the
 // dialog so users running the same flow repeatedly don't have to retype.
 const runDialogOpen = ref(false);
+const shareOpen     = ref(false);
 const running       = ref(false);
 const lastRunInput  = ref({});
 

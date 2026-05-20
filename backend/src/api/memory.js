@@ -24,10 +24,11 @@ import {
   setKv, deleteKv, listMemories,
   loadHistory, clearHistory,
 } from "../engine/memoryStore.js";
-import { requireUser, requireRole } from "../middleware/auth.js";
+import { requireUser, requireRole, requireProject } from "../middleware/auth.js";
 
 const router = Router();
 router.use(requireUser);
+router.use(requireProject);
 
 router.get("/", requireRole("admin", "editor", "viewer"), async (req, res, next) => {
   try {

@@ -48,7 +48,7 @@ export default {
       throw new Error("mqtt trigger: `config` is required (name of a stored mqtt configuration)");
     }
 
-    const configsMap = await loadConfigsMap(ctx.workspaceId);
+    const configsMap = await loadConfigsMap(ctx.workspaceId, ctx.projectId || null);
     const cfg = configsMap[config.config];
     if (!cfg) {
       throw new Error(

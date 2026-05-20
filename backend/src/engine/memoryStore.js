@@ -22,6 +22,33 @@ function requireWs(workspaceId) {
   return workspaceId;
 }
 
+/**
+ * RBAC v2 — every memory row carries project_id NOT NULL. When the
+ * caller has a project context, they pass it through. When they don't
+ * (engine paths that haven't been threaded yet), we resolve to the
+ * workspace's Default project as a safe fallback. The lookup is cached
+ * in-process since default-project lookups are read-heavy and the
+ * mapping is effectively static.
+ */
+const defaultProjectCache = new Map();    // workspaceId → projectId
+async function resolveProjectId(workspaceId, projectId) {
+  if (projectId) return projectId;
+  if (defaultProjectCache.has(workspaceId)) {
+    return defaultProjectCache.get(workspaceId);
+  }
+  const { rows } = await pool.query(
+    `SELECT id FROM projects
+      WHERE workspace_id = $1 AND slug = 'default' AND deleted_at IS NULL
+      LIMIT 1`,
+    [workspaceId],
+  );
+  if (rows.length === 0) {
+    throw new Error(`memoryStore: workspace ${workspaceId} has no default project`);
+  }
+  defaultProjectCache.set(workspaceId, rows[0].id);
+  return rows[0].id;
+}
+
 // ──────────────────────────────────────────────────────────────────────
 // KV (Layer 1)
 // ──────────────────────────────────────────────────────────────────────
@@ -53,12 +80,13 @@ export async function getKv({
  * an extra set of parentheses.
  */
 export async function setKv({
-  workspaceId, scope = "workflow", scopeId, namespace = "kv", key, value,
+  workspaceId, projectId, scope = "workflow", scopeId, namespace = "kv", key, value,
 }) {
   requireWs(workspaceId);
+  const proj = await resolveProjectId(workspaceId, projectId);
   await pool.query(
-    `INSERT INTO memories (id, scope, scope_id, namespace, key, seq, value, workspace_id)
-       VALUES ($1, $2, $3, $4, $5, NULL, $6::jsonb, $7)
+    `INSERT INTO memories (id, scope, scope_id, namespace, key, seq, value, workspace_id, project_id)
+       VALUES ($1, $2, $3, $4, $5, NULL, $6::jsonb, $7, $8)
      ON CONFLICT (
        scope,
        (COALESCE(scope_id,'00000000-0000-0000-0000-000000000000'::uuid)),
@@ -66,7 +94,7 @@ export async function setKv({
        key
      ) WHERE seq IS NULL
      DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-    [uuid(), scope, scopeId || null, namespace, key, JSON.stringify(value), workspaceId],
+    [uuid(), scope, scopeId || null, namespace, key, JSON.stringify(value), workspaceId, proj],
   );
 }
 
@@ -143,17 +171,19 @@ export async function loadKvForScope({
  * without an explicit lock.
  */
 export async function appendHistory({
-  workspaceId, scope = "workflow", scopeId, conversationId, role, content,
+  workspaceId, projectId, scope = "workflow", scopeId, conversationId, role, content,
 }) {
   requireWs(workspaceId);
+  const proj = await resolveProjectId(workspaceId, projectId);
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       await pool.query(
-        `INSERT INTO memories (id, scope, scope_id, namespace, key, seq, value, workspace_id)
+        `INSERT INTO memories (id, scope, scope_id, namespace, key, seq, value, workspace_id, project_id)
          SELECT $1, $2, $3, 'history', $4,
                 COALESCE(MAX(seq), 0) + 1,
                 $5::jsonb,
-                $6
+                $6,
+                $7
            FROM memories
           WHERE workspace_id=$6
             AND scope=$2
@@ -161,7 +191,7 @@ export async function appendHistory({
                 = COALESCE($3::uuid,'00000000-0000-0000-0000-000000000000'::uuid)
             AND namespace='history' AND key=$4`,
         [uuid(), scope, scopeId || null, conversationId,
-         JSON.stringify({ role, content }), workspaceId],
+         JSON.stringify({ role, content }), workspaceId, proj],
       );
       return;
     } catch (e) {

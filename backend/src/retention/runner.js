@@ -29,6 +29,7 @@ import {
   pruneRefreshTokens,
   pruneConversationHistory,
   pruneAuditLogs,
+  purgeDeletedProjects,
 } from "./policies.js";
 
 const tracer = trace.getTracer("daisy-dag.retention");
@@ -83,6 +84,7 @@ export async function runAll() {
       refreshTokens: { deleted: 0,  passes: 0 },
       history:       { deleted: 0,  passes: 0 },
       auditLogs:     { deleted: 0,  passes: 0 },
+      projects:      { purged: 0,   passes: 0 },
       errors:        [],
     };
     try {
@@ -135,6 +137,18 @@ export async function runAll() {
         return n >= CONFIG.batchLimit;
       }, CONFIG.maxPasses, "pruneAuditLogs", result);
 
+      // 5. Soft-deleted projects past their restore window — hard
+      //    delete (CASCADE wipes every owned resource). Lower per-pass
+      //    cap because each project deletion fans out across many
+      //    tables; we'd rather chunk this finely than have one
+      //    monstrous transaction.
+      await drainPass(async () => {
+        const n = await purgeDeletedProjects({ limit: 100 });
+        result.projects.purged += n;
+        result.projects.passes++;
+        return n >= 100;
+      }, CONFIG.maxPasses, "purgeDeletedProjects", result);
+
       span.setStatus({ code: SpanStatusCode.OK });
     } catch (e) {
       span.recordException(e);
@@ -151,6 +165,7 @@ export async function runAll() {
       refreshTokens: result.refreshTokens,
       history:       result.history,
       auditLogs:     result.auditLogs,
+      projects:      result.projects,
       errors:        result.errors.length,
     });
     return result;

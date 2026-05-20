@@ -44,14 +44,23 @@ const JWT_ISSUER = "daisy-dag";
 // Access token
 // ────────────────────────────────────────────────────────────────────
 
-/** Issue a fresh access JWT. */
-export function signAccessToken({ userId, email, role, workspaceId }) {
+/** Issue a fresh access JWT.
+ *
+ *  RBAC v2 adds `proj` — the currently-active project for this
+ *  session. It's a UX hint (the UI remembers which project the user
+ *  was last in). Server-side RBAC checks always re-resolve against
+ *  the project carried on the request (path param, header, or body),
+ *  NOT this claim — `proj` is purely a default for routes that
+ *  didn't specify a project explicitly.
+ */
+export function signAccessToken({ userId, email, role, workspaceId, projectId = null }) {
   return jwt.sign(
     {
       sub:   userId,
       email: email,
       role:  role,
       ws:    workspaceId,
+      proj:  projectId,
     },
     secret(),
     { algorithm: JWT_ALG, issuer: JWT_ISSUER, expiresIn: ACCESS_TTL },

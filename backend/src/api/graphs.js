@@ -1,21 +1,20 @@
 // Graphs API — single-row workflows + explicit archive.
 //
-// Versioning was removed in migration 008. The `id` is stable across
-// saves, so URLs like /flowDesigner/<id> stay valid forever. Old saves
-// don't accumulate as new rows; users keep snapshots by hitting the
-// Archive button, which copies the current state into archived_graphs.
+// RBAC v2: every owned row carries (workspace_id, project_id). The
+// active project comes from req.user.projectId (set by middleware from
+// the JWT or X-Project-Id header). Workspace admins inherit project
+// admin via auth/permissions.js — they still need an active project
+// to operate inside; the project switcher in the UI provides it.
 //
-// Auth model (PR 2):
+// Auth model:
 //   • Every route requires a logged-in caller (requireUser).
-//   • Read routes  — admin, editor, viewer.
-//   • Write routes (POST/PUT/DELETE/execute/archive) — admin, editor.
-//   • Workspace scoping — every query carries
-//     `workspace_id = req.user.workspaceId` so a caller can only
-//     see / mutate graphs in their active workspace. The DB-level
-//     NOT NULL constraint is the fail-safe.
+//   • Read routes  — admin, editor, viewer (workspace role).
+//   • Write routes — admin, editor.
+//   • Project scoping — every query carries
+//     `workspace_id = req.user.workspaceId AND project_id = req.user.projectId`.
 //
 // Endpoints:
-//   GET    /graphs                              list live workflows
+//   GET    /graphs                              list live workflows in active project
 //   GET    /graphs/:id                          full live row
 //   POST   /graphs                              create
 //   PUT    /graphs/:id                          in-place update
@@ -32,9 +31,11 @@ import { Router } from "express";
 import { v4 as uuid } from "uuid";
 import { pool, withTx } from "../db/pool.js";
 import { parseDag } from "../dsl/parser.js";
+import { validatePluginGrants } from "../auth/pluginGrants.js";
+import { assertQuota, incrementUsage } from "../auth/quotas.js";
 import { enqueueExecution } from "../queue/queue.js";
 import { NotFoundError, ValidationError } from "../utils/errors.js";
-import { requireUser, requireRole } from "../middleware/auth.js";
+import { requireUser, requireRole, requireProject } from "../middleware/auth.js";
 import { limiters } from "../middleware/rateLimit.js";
 import { auditLog } from "../audit/log.js";
 import { normalizeTags } from "../utils/tags.js";
@@ -50,6 +51,10 @@ const router = Router();
 // Every route in this file is gated. Auth runs first; per-route
 // requireRole(...) below enforces the read/write split.
 router.use(requireUser);
+// Every owned-resource route requires an active project. /validate
+// applies it too — validation is per-workspace not per-project but
+// requiring a project keeps the auth surface uniform.
+router.use(requireProject);
 
 // ──────────────────────────────────────────────────────────────────────
 // Live workflows
@@ -65,9 +70,11 @@ router.get("/", requireRole("admin", "editor", "viewer"), async (req, res, next)
              COALESCE(u.display_name, u.email) AS updated_by_email
         FROM graphs g
         LEFT JOIN users u ON u.id = g.updated_by
-       WHERE g.deleted_at IS NULL AND g.workspace_id = $1
+       WHERE g.deleted_at IS NULL
+         AND g.workspace_id = $1
+         AND g.project_id   = $2
        ORDER BY g.name
-    `, [req.user.workspaceId]);
+    `, [req.user.workspaceId, req.user.projectId]);
     res.json(rows);
   } catch (e) { next(e); }
 });
@@ -78,8 +85,11 @@ router.get("/:id", requireRole("admin", "editor", "viewer"), async (req, res, ne
       `SELECT g.*, COALESCE(u.display_name, u.email) AS updated_by_email
          FROM graphs g
          LEFT JOIN users u ON u.id = g.updated_by
-        WHERE g.id=$1 AND g.workspace_id=$2 AND g.deleted_at IS NULL`,
-      [req.params.id, req.user.workspaceId],
+        WHERE g.id=$1
+          AND g.workspace_id=$2
+          AND g.project_id=$3
+          AND g.deleted_at IS NULL`,
+      [req.params.id, req.user.workspaceId, req.user.projectId],
     );
     if (rows.length === 0) throw new NotFoundError("graph");
     res.json(rows[0]);
@@ -100,13 +110,17 @@ router.post("/", requireRole("admin", "editor"), async (req, res, next) => {
     const dsl = readDsl(req.body);
     if (!dsl) throw new ValidationError("dsl field required");
     const parsed = parseDag(dsl);
+    // Plugin-grant check: every non-core action this workflow uses
+    // must be enabled in the active project. Throws a 403-shaped
+    // error with the missing plugins list if not.
+    await validatePluginGrants(parsed, req.user.projectId);
 
     const id = uuid();
     try {
       await pool.query(
-        `INSERT INTO graphs (id, name, dsl, parsed, workspace_id, updated_by)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
-        [id, parsed.name, dsl, JSON.stringify(parsed), req.user.workspaceId, req.user.id],
+        `INSERT INTO graphs (id, name, dsl, parsed, workspace_id, project_id, updated_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [id, parsed.name, dsl, JSON.stringify(parsed), req.user.workspaceId, req.user.projectId, req.user.id],
       );
     } catch (e) {
       // Unique-name conflict — the partial unique index added by 008
@@ -119,6 +133,7 @@ router.post("/", requireRole("admin", "editor"), async (req, res, next) => {
     await auditLog({
       req, action: "graph.create",
       resource: { type: "graph", id, name: parsed.name },
+      projectId: req.user.projectId,
     });
     res.status(201).json({ id, name: parsed.name });
   } catch (e) { next(e); }
@@ -129,10 +144,12 @@ router.put("/:id", requireRole("admin", "editor"), async (req, res, next) => {
     const dsl = readDsl(req.body);
     if (!dsl) throw new ValidationError("dsl field required");
     const parsed = parseDag(dsl);
+    await validatePluginGrants(parsed, req.user.projectId);
 
     const { rows: existing } = await pool.query(
-      "SELECT name FROM graphs WHERE id=$1 AND workspace_id=$2 AND deleted_at IS NULL",
-      [req.params.id, req.user.workspaceId],
+      `SELECT name FROM graphs
+        WHERE id=$1 AND workspace_id=$2 AND project_id=$3 AND deleted_at IS NULL`,
+      [req.params.id, req.user.workspaceId, req.user.projectId],
     );
     if (existing.length === 0) throw new NotFoundError("graph");
     if (existing[0].name !== parsed.name) {
@@ -146,13 +163,14 @@ router.put("/:id", requireRole("admin", "editor"), async (req, res, next) => {
           SET dsl = $2,
               parsed = $3,
               updated_at = NOW(),
-              updated_by = $5
-        WHERE id = $1 AND workspace_id = $4`,
-      [req.params.id, dsl, JSON.stringify(parsed), req.user.workspaceId, req.user.id],
+              updated_by = $6
+        WHERE id = $1 AND workspace_id = $4 AND project_id = $5`,
+      [req.params.id, dsl, JSON.stringify(parsed), req.user.workspaceId, req.user.projectId, req.user.id],
     );
     await auditLog({
       req, action: "graph.update",
       resource: { type: "graph", id: req.params.id, name: parsed.name },
+      projectId: req.user.projectId,
     });
     res.json({ id: req.params.id, name: parsed.name });
   } catch (e) { next(e); }
@@ -162,13 +180,14 @@ router.delete("/:id", requireRole("admin", "editor"), async (req, res, next) => 
   try {
     const { rowCount } = await pool.query(
       `UPDATE graphs SET deleted_at=NOW()
-        WHERE id=$1 AND workspace_id=$2 AND deleted_at IS NULL`,
-      [req.params.id, req.user.workspaceId],
+        WHERE id=$1 AND workspace_id=$2 AND project_id=$3 AND deleted_at IS NULL`,
+      [req.params.id, req.user.workspaceId, req.user.projectId],
     );
     if (rowCount === 0) throw new NotFoundError("graph");
     await auditLog({
       req, action: "graph.delete",
       resource: { type: "graph", id: req.params.id },
+      projectId: req.user.projectId,
     });
     res.status(200).json({ ok: true, id: req.params.id, deleted: "graph" });
   } catch (e) { next(e); }
@@ -179,13 +198,13 @@ router.delete("/:id", requireRole("admin", "editor"), async (req, res, next) => 
 //
 // `archived_graphs` doesn't carry workspace_id directly — every row
 // references its source graph via `source_id`. We always check that
-// the source graph lives in the caller's workspace before exposing
-// or mutating its archive rows. One subquery per call is the cost.
+// the source graph lives in the caller's workspace + project before
+// exposing or mutating its archive rows.
 // ──────────────────────────────────────────────────────────────────────
 
 router.get("/:id/archives", requireRole("admin", "editor", "viewer"), async (req, res, next) => {
   try {
-    if (!await graphInWorkspace(req.params.id, req.user.workspaceId)) {
+    if (!await graphInScope(req.params.id, req.user.workspaceId, req.user.projectId)) {
       throw new NotFoundError("graph");
     }
     const { rows } = await pool.query(
@@ -202,7 +221,7 @@ router.get("/:id/archives", requireRole("admin", "editor", "viewer"), async (req
 
 router.get("/:id/archives/:archiveId", requireRole("admin", "editor", "viewer"), async (req, res, next) => {
   try {
-    if (!await graphInWorkspace(req.params.id, req.user.workspaceId)) {
+    if (!await graphInScope(req.params.id, req.user.workspaceId, req.user.projectId)) {
       throw new NotFoundError("graph");
     }
     const { rows } = await pool.query(
@@ -222,8 +241,8 @@ router.post("/:id/archives", requireRole("admin", "editor"), async (req, res, ne
 
     const { rows } = await pool.query(
       `SELECT name, dsl, parsed FROM graphs
-        WHERE id=$1 AND workspace_id=$2 AND deleted_at IS NULL`,
-      [req.params.id, req.user.workspaceId],
+        WHERE id=$1 AND workspace_id=$2 AND project_id=$3 AND deleted_at IS NULL`,
+      [req.params.id, req.user.workspaceId, req.user.projectId],
     );
     if (rows.length === 0) throw new NotFoundError("graph");
     const g = rows[0];
@@ -241,13 +260,12 @@ router.post("/:id/archives", requireRole("admin", "editor"), async (req, res, ne
 router.post("/:id/archives/:archiveId/restore", requireRole("admin", "editor"), async (req, res, next) => {
   try {
     await withTx(async (c) => {
-      // First — make sure the live graph belongs to the caller. Rest
-      // of the work happens inside this same transaction so any
-      // failure after the source check rolls back cleanly.
+      // Source-graph scope check inside the tx so a failure after this
+      // point rolls back cleanly.
       const { rows: live } = await c.query(
         `SELECT name FROM graphs
-          WHERE id=$1 AND workspace_id=$2 AND deleted_at IS NULL`,
-        [req.params.id, req.user.workspaceId],
+          WHERE id=$1 AND workspace_id=$2 AND project_id=$3 AND deleted_at IS NULL`,
+        [req.params.id, req.user.workspaceId, req.user.projectId],
       );
       if (live.length === 0) throw new NotFoundError("graph");
 
@@ -266,9 +284,9 @@ router.post("/:id/archives/:archiveId/restore", requireRole("admin", "editor"), 
             SET dsl = $2,
                 parsed = $3,
                 updated_at = NOW(),
-                updated_by = $5
-          WHERE id = $1 AND workspace_id = $4`,
-        [req.params.id, arch[0].dsl, arch[0].parsed, req.user.workspaceId, req.user.id],
+                updated_by = $6
+          WHERE id = $1 AND workspace_id = $4 AND project_id = $5`,
+        [req.params.id, arch[0].dsl, arch[0].parsed, req.user.workspaceId, req.user.projectId, req.user.id],
       );
     });
     res.json({ ok: true, id: req.params.id });
@@ -282,26 +300,40 @@ router.post("/:id/archives/:archiveId/restore", requireRole("admin", "editor"), 
 router.post("/:id/execute", limiters.execute, requireRole("admin", "editor"), async (req, res, next) => {
   try {
     const { rows } = await pool.query(
-      "SELECT id FROM graphs WHERE id=$1 AND workspace_id=$2 AND deleted_at IS NULL",
-      [req.params.id, req.user.workspaceId],
+      `SELECT id, parsed FROM graphs
+        WHERE id=$1 AND workspace_id=$2 AND project_id=$3 AND deleted_at IS NULL`,
+      [req.params.id, req.user.workspaceId, req.user.projectId],
     );
     if (rows.length === 0) throw new NotFoundError("graph");
 
+    // Re-check plugin grants at enqueue time. A plugin could have
+    // been disabled in the project AFTER the workflow was saved;
+    // we'd rather block here than fail mysteriously inside the
+    // worker's first node dispatch.
+    await validatePluginGrants(rows[0].parsed, req.user.projectId);
+
+    // Daily execution quota — refuse to enqueue when the project's
+    // budget is exhausted. Same gate runs from triggers + workflow.fire
+    // so the count stays consistent regardless of where the run came
+    // from.
+    await assertQuota(req.user.projectId, "executions_per_day");
+
     const execId = uuid();
     const userInput = req.body?.context || {};
-    // Tags arrive on the manual-run path from the Run dialog. Body
-    // shape: { context, tags: ["release", "manual"] }. Empty/invalid
-    // values are dropped by normalizeTags — the row gets [] either way.
     const tags = normalizeTags(req.body?.tags);
     await pool.query(
-      `INSERT INTO executions (id, graph_id, status, inputs, context, workspace_id, tags)
-       VALUES ($1,$2,'queued',$3,'{}'::jsonb,$4,$5)`,
-      [execId, req.params.id, JSON.stringify(userInput), req.user.workspaceId, tags],
+      `INSERT INTO executions (id, graph_id, status, inputs, context, workspace_id, project_id, tags)
+       VALUES ($1,$2,'queued',$3,'{}'::jsonb,$4,$5,$6)`,
+      [execId, req.params.id, JSON.stringify(userInput), req.user.workspaceId, req.user.projectId, tags],
     );
     await enqueueExecution({ executionId: execId, graphId: req.params.id });
+    // Bump the daily-execution counter after the row + queue commit
+    // succeeded — counting a failure-to-enqueue would be misleading.
+    incrementUsage(req.user.projectId, "executions_per_day", 1).catch(() => {});
     await auditLog({
       req, action: "graph.execute",
       resource: { type: "graph", id: req.params.id },
+      projectId: req.user.projectId,
       metadata: { executionId: execId },
     });
     res.status(202).json({ executionId: execId, status: "queued" });
@@ -312,11 +344,12 @@ router.post("/:id/execute", limiters.execute, requireRole("admin", "editor"), as
 // helpers
 // ──────────────────────────────────────────────────────────────────────
 
-/** True if a graph row exists in the given workspace + isn't soft-deleted. */
-async function graphInWorkspace(graphId, workspaceId) {
+/** True if a graph row exists in (workspace, project) and isn't soft-deleted. */
+async function graphInScope(graphId, workspaceId, projectId) {
   const { rows } = await pool.query(
-    "SELECT 1 FROM graphs WHERE id=$1 AND workspace_id=$2 AND deleted_at IS NULL",
-    [graphId, workspaceId],
+    `SELECT 1 FROM graphs
+      WHERE id=$1 AND workspace_id=$2 AND project_id=$3 AND deleted_at IS NULL`,
+    [graphId, workspaceId, projectId],
   );
   return rows.length > 0;
 }

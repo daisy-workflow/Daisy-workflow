@@ -25,8 +25,27 @@
           <span v-if="dirty" class="q-ml-xs text-caption" style="color: var(--warning);">●</span>
         </q-toolbar-title>
         <q-space />
+        <!-- Share — per-resource ACL dialog. Disabled until the config
+             has been saved at least once (no id to attach grants to).
+             Workspace-shared configs are intentionally not shareable
+             at resource scope; the dialog (and the backend) refuse
+             that combination — sharing-of-shared is a workspace-level
+             act, not a per-row one. -->
         <q-btn
-          unelevated  
+          flat round dense
+          icon="share"
+          class="btn-icon q-mr-sm"
+          :disable="isNew"
+          @click="shareOpen = true"
+        >
+          <q-tooltip>{{
+            isNew
+              ? "Save the config once before sharing"
+              : "Share with specific users"
+          }}</q-tooltip>
+        </q-btn>
+        <q-btn
+          unelevated
           color="primary"
           icon="save"
           class="btn-icon-primary"
@@ -79,6 +98,31 @@
             type="textarea" autogrow
             input-style="min-height: 60px;"
           />
+
+          <!-- Workspace-share toggle. Visible to workspace admins ONLY,
+               and only on create. After a config is saved its sharing
+               state is fixed — changing it would re-assign ownership
+               between project and workspace, which we don't expose as
+               a one-button action (avoids accidental cross-project
+               credential leaks). -->
+          <q-card
+            v-if="isNew && auth.user?.role === 'admin'"
+            flat bordered class="q-mb-sm"
+          >
+            <q-card-section class="q-pa-sm row items-center">
+              <q-toggle
+                v-model="form.sharedAtWorkspace"
+                color="primary"
+                label="Share with the whole workspace"
+              />
+              <q-space />
+              <q-icon name="info" class="q-mr-xs text-grey-7" />
+              <div class="text-caption text-grey-7">
+                Shared configs are usable by every project in this workspace.
+                Project-private configs override shared ones on a name collision.
+              </div>
+            </q-card-section>
+          </q-card>
 
           <!-- Typed forms ──────────────────────────────────────────────── -->
           <q-card v-if="typeDef && !typeDef.freeform" flat bordered>
@@ -199,6 +243,17 @@
         </div>
       </q-page>
     </q-page-container>
+
+    <!-- Per-resource sharing dialog — lazy-mounted so unsaved configs
+         pay zero cost. The component does its own listing + grant
+         management; we just pass identity. -->
+    <ShareResourceDialog
+      v-if="!isNew"
+      v-model:open="shareOpen"
+      resource-type="config"
+      :resource-id="route.params.id"
+      :resource-name="form.name"
+    />
   </q-layout>
 </template>
 
@@ -207,12 +262,18 @@ import { ref, reactive, computed, watch, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useQuasar } from "quasar";
 import { Configs } from "../api/client";
+import { auth } from "../stores/auth.js";
+import ShareResourceDialog from "../components/ShareResourceDialog.vue";
 
 const route  = useRoute();
 const router = useRouter();
 const $q     = useQuasar();
 
 const isNew = computed(() => route.params.id === "new" || !route.params.id);
+
+// Open state for the per-resource share dialog. Initial close;
+// toggled by the toolbar share button.
+const shareOpen = ref(false);
 
 // ── Server-side schema for all types (drives the editor). ──────────────────
 const types = ref([]);
@@ -233,6 +294,9 @@ const form = ref({
   type: "generic",
   description: "",
   data: {},
+  // RBAC v2: workspace-shared toggle. Only consulted on create; ignored
+  // by the API on update. Default false = project-private.
+  sharedAtWorkspace: false,
 });
 
 // Per-secret-field visibility toggle (eye icon next to the password input).
@@ -386,6 +450,11 @@ async function onSave() {
       description: form.value.description,
       data,
     };
+    // Sharing flag travels only on the create path — backend ignores
+    // it on update (sharing is immutable post-create in v1).
+    if (isNew.value && form.value.sharedAtWorkspace) {
+      payload.sharedAtWorkspace = true;
+    }
     let saved;
     if (isNew.value) {
       saved = await Configs.create(payload);

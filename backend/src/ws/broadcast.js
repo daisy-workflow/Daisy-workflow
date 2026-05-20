@@ -26,6 +26,7 @@ import IORedis from "ioredis";
 import { config } from "../config.js";
 import { pool } from "../db/pool.js";
 import { verifyAccessToken } from "../auth/tokens.js";
+import { isApiKeyToken, findActiveByToken, markUsed } from "../auth/apiKeys.js";
 
 const CHANNEL = "dag.events";
 
@@ -46,21 +47,39 @@ export function attachWss(httpServer) {
     // Authenticate the upgrade. Closing with a non-1000 code surfaces
     // the failure to the browser's onerror; the frontend's auth-store
     // can re-issue a fresh token via /auth/refresh and reconnect.
+    //
+    // RBAC v2: accept either a JWT (interactive users) or a service-
+    // account API key in the same access_token slot. CI / automation
+    // can subscribe to live execution events via the SA's key.
     if (!token) {
       ws.close(4001, "missing access_token");
       return;
     }
-    let payload;
-    try {
-      payload = verifyAccessToken(token);
-    } catch (e) {
-      ws.close(4001, e.name === "TokenExpiredError" ? "token expired" : "invalid token");
-      return;
-    }
-    const userWorkspace = payload.ws;
-    if (!userWorkspace) {
-      ws.close(4001, "no workspace in token");
-      return;
+    let userWorkspace = null;
+    let principalId   = null;
+    if (isApiKeyToken(token)) {
+      const sa = await findActiveByToken(token);
+      if (!sa) {
+        ws.close(4001, "invalid or revoked API key");
+        return;
+      }
+      markUsed(sa.keyId, req.socket?.remoteAddress || null);
+      userWorkspace = sa.workspaceId;
+      principalId   = sa.serviceAccountId;
+    } else {
+      let payload;
+      try {
+        payload = verifyAccessToken(token);
+      } catch (e) {
+        ws.close(4001, e.name === "TokenExpiredError" ? "token expired" : "invalid token");
+        return;
+      }
+      userWorkspace = payload.ws;
+      principalId   = payload.sub;
+      if (!userWorkspace) {
+        ws.close(4001, "no workspace in token");
+        return;
+      }
     }
 
     // If the client subscribed to a specific execution, verify it
@@ -94,7 +113,7 @@ export function attachWss(httpServer) {
 
     // Tag the socket with its workspace for any future routing.
     ws._workspace = userWorkspace;
-    ws._user      = payload.sub;
+    ws._user      = principalId;
 
     ws.send(JSON.stringify({ type: "hello", executionId }));
   });

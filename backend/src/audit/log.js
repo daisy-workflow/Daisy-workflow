@@ -57,6 +57,7 @@ export async function auditLog({
   outcome  = "success",
   metadata = {},
   workspaceId,
+  projectId,
   actor,
 } = {}) {
   if (!action) {
@@ -70,19 +71,34 @@ export async function auditLog({
     const ip          = req?.ip || null;
     const userAgent   = (req?.headers?.["user-agent"] || "").slice(0, 500) || null;
     const ws          = workspaceId ?? u.workspaceId ?? null;
+    // Project scope is OPTIONAL — workspace-level events (project
+    // create/delete, role grants, plugin install) carry NULL on
+    // purpose so a "show me workspace-level changes" filter can pick
+    // them out. Callers that have a project context should pass it
+    // explicitly; we don't auto-fill from req.user.projectId because
+    // that's the UI's *active* project, not necessarily the *target*.
+    const proj        = projectId ?? null;
+
+    // Actor kind — defaults to 'user' for any caller that doesn't set
+    // it, so pre-RBAC-v2 audit sites stay correct. Service-account-
+    // initiated rows carry 'service_account', surfaced verbatim from
+    // req.user.kind populated by the auth middleware.
+    const actorKind = u.kind || "user";
 
     await pool.query(
       `INSERT INTO audit_logs (
-         id, workspace_id, actor_id, actor_email, actor_role,
+         id, workspace_id, project_id, actor_id, actor_email, actor_role, actor_kind,
          action, resource_type, resource_id, resource_name,
          outcome, metadata, ip, user_agent, trace_id
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
       [
         id,
         ws,
+        proj,
         u.id    || null,
         u.email || null,
         u.role  || null,
+        actorKind,
         action,
         resource?.type || null,
         resource?.id   || null,

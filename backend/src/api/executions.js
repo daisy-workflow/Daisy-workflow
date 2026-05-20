@@ -3,7 +3,7 @@ import { pool } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../utils/errors.js";
 import { enqueueExecution } from "../queue/queue.js";
 import { resetNodeForReplay, upsertNodeState } from "../engine/nodeStateStore.js";
-import { requireUser, requireRole } from "../middleware/auth.js";
+import { requireUser, requireRole, requireProject } from "../middleware/auth.js";
 import { diagnoseExecution } from "../selfheal/diagnose.js";
 import { auditLog } from "../audit/log.js";
 import { normalizeTags } from "../utils/tags.js";
@@ -21,12 +21,13 @@ const router = Router();
 //                                              gated through its
 //                                              parent execution.
 router.use(requireUser);
+router.use(requireProject);
 
 router.get("/", requireRole("admin", "editor", "viewer"), async (req, res, next) => {
   try {
     const { graphId, status, tags, limit = 50 } = req.query;
-    const params = [req.user.workspaceId];        // $1 — always present
-    const where = ["e.workspace_id = $1"];
+    const params = [req.user.workspaceId, req.user.projectId];  // $1, $2
+    const where = ["e.workspace_id = $1", "e.project_id = $2"];
     if (graphId) {
       params.push(graphId);
       where.push(`graph_id=$${params.length}`);
@@ -74,8 +75,8 @@ router.get("/", requireRole("admin", "editor", "viewer"), async (req, res, next)
 router.get("/:id", requireRole("admin", "editor", "viewer"), async (req, res, next) => {
   try {
     const { rows: execs } = await pool.query(
-      "SELECT * FROM executions WHERE id=$1 AND workspace_id=$2",
-      [req.params.id, req.user.workspaceId],
+      "SELECT * FROM executions WHERE id=$1 AND workspace_id=$2 AND project_id=$3",
+      [req.params.id, req.user.workspaceId, req.user.projectId],
     );
     if (execs.length === 0) throw new NotFoundError("execution");
 
@@ -149,8 +150,8 @@ router.get("/:id", requireRole("admin", "editor", "viewer"), async (req, res, ne
 router.post("/:id/resume", requireRole("admin", "editor"), async (req, res, next) => {
   try {
     const { rows } = await pool.query(
-      "SELECT id, graph_id, status FROM executions WHERE id=$1 AND workspace_id=$2",
-      [req.params.id, req.user.workspaceId],
+      "SELECT id, graph_id, status FROM executions WHERE id=$1 AND workspace_id=$2 AND project_id=$3",
+      [req.params.id, req.user.workspaceId, req.user.projectId],
     );
     if (rows.length === 0) throw new NotFoundError("execution");
     const exec = rows[0];
@@ -225,8 +226,8 @@ router.post("/:id/skip", requireRole("admin", "editor"), async (req, res, next) 
     if (!node) throw new ValidationError("body.node is required");
 
     const { rows } = await pool.query(
-      "SELECT id, graph_id, status FROM executions WHERE id=$1 AND workspace_id=$2",
-      [req.params.id, req.user.workspaceId],
+      "SELECT id, graph_id, status FROM executions WHERE id=$1 AND workspace_id=$2 AND project_id=$3",
+      [req.params.id, req.user.workspaceId, req.user.projectId],
     );
     if (rows.length === 0) throw new NotFoundError("execution");
     const exec = rows[0];
@@ -273,8 +274,8 @@ router.post("/:id/nodes/:nodeName/respond", requireRole("admin", "editor"), asyn
       : body;
 
     const { rows: execs } = await pool.query(
-      "SELECT id, graph_id, status FROM executions WHERE id=$1 AND workspace_id=$2",
-      [id, req.user.workspaceId],
+      "SELECT id, graph_id, status FROM executions WHERE id=$1 AND workspace_id=$2 AND project_id=$3",
+      [id, req.user.workspaceId, req.user.projectId],
     );
     if (execs.length === 0) throw new NotFoundError("execution");
     const exec = execs[0];
@@ -333,8 +334,8 @@ router.post("/:id/diagnose", requireRole("admin", "editor"), async (req, res, ne
     // Cheap workspace check up-front — bail before calling out to the
     // LLM if the execution isn't ours.
     const { rows } = await pool.query(
-      "SELECT id, status FROM executions WHERE id=$1 AND workspace_id=$2",
-      [req.params.id, req.user.workspaceId],
+      "SELECT id, status FROM executions WHERE id=$1 AND workspace_id=$2 AND project_id=$3",
+      [req.params.id, req.user.workspaceId, req.user.projectId],
     );
     if (rows.length === 0) throw new NotFoundError("execution");
 
@@ -359,8 +360,8 @@ router.post("/:id/diagnose", requireRole("admin", "editor"), async (req, res, ne
 router.delete("/:id", requireRole("admin", "editor"), async (req, res, next) => {
   try {
     const { rowCount } = await pool.query(
-      "DELETE FROM executions WHERE id=$1 AND workspace_id=$2",
-      [req.params.id, req.user.workspaceId],
+      "DELETE FROM executions WHERE id=$1 AND workspace_id=$2 AND project_id=$3",
+      [req.params.id, req.user.workspaceId, req.user.projectId],
     );
     if (rowCount === 0) throw new NotFoundError("execution");
     res.status(200).json({ ok: true, id: req.params.id, deleted: "execution" });

@@ -10,10 +10,18 @@ const api = axios.create({
 // Request interceptor — attach the in-memory access token to every
 // outbound call. We don't read from localStorage on purpose; refresh
 // tokens (httpOnly cookie) handle persistence across reloads.
+//
+// RBAC v2: also attach the X-Project-Id header so the API knows which
+// project the request applies to. The backend honours this header
+// over the JWT's `proj` claim — the JWT just remembers the UI's last
+// selection across page reloads.
 api.interceptors.request.use((cfg) => {
+  cfg.headers = cfg.headers || {};
   if (auth.token) {
-    cfg.headers = cfg.headers || {};
     cfg.headers.Authorization = `Bearer ${auth.token}`;
+  }
+  if (auth.activeProjectId) {
+    cfg.headers["X-Project-Id"] = auth.activeProjectId;
   }
   return cfg;
 });
@@ -274,6 +282,101 @@ export const Workspaces = {
   members: (id)                     => api.get(`/workspaces/${id}/members`).then(r => r.data),
   rename:  (id, name)               => api.put(`/workspaces/${id}`, { name }).then(r => r.data),
   switch:  (id)                     => api.post(`/workspaces/${id}/switch`).then(r => r.data),
+};
+
+// Projects (RBAC v2) — sit under a workspace. The listing returns the
+// projects the caller can see (visible-membership + workspace-admin
+// inheritance enforced server-side). Switching a project issues a new
+// JWT whose `proj` claim points at the target; the UI stores it as
+// `auth.activeProjectId` so the request interceptor adds the
+// X-Project-Id header to every outbound call.
+export const Projects = {
+  list:    (params = {})            => api.get("/projects",  { params }).then(r => r.data),
+  get:     (id)                     => api.get(`/projects/${id}`).then(r => r.data),
+  create:  (body)                   => api.post("/projects", body).then(r => r.data),
+  update:  (id, body)               => api.put(`/projects/${id}`, body).then(r => r.data),
+  remove:  (id)                     => api.delete(`/projects/${id}`).then(r => r.data),
+  restore: (id)                     => api.post(`/projects/${id}/restore`).then(r => r.data),
+  switch:  (id)                     => api.post(`/projects/${id}/switch`).then(r => r.data),
+  members: (id)                     => api.get(`/projects/${id}/members`).then(r => r.data),
+  addMember:    (id, userId, role)  => api.post(`/projects/${id}/members`,        { userId, role }).then(r => r.data),
+  updateMember: (id, userId, role)  => api.put (`/projects/${id}/members/${userId}`, { role }).then(r => r.data),
+  removeMember: (id, userId)        => api.delete(`/projects/${id}/members/${userId}`).then(r => r.data),
+};
+
+// Project plugins — workspace plugins toggled per-project. The active
+// project comes from the X-Project-Id header (set by the interceptor).
+export const ProjectPlugins = {
+  list:   ()                          => api.get("/project-plugins").then(r => r.data),
+  set:    (pluginName, enabled)       => api.put(`/project-plugins/${pluginName}`, { enabled }).then(r => r.data),
+  unset:  (pluginName)                => api.delete(`/project-plugins/${pluginName}`).then(r => r.data),
+};
+
+// Just-in-time elevations. Workspace admins issue/revoke; every user
+// can see their own active grants via /mine.
+export const JitGrants = {
+  list:    ()                 => api.get("/jit-grants").then(r => r.data),
+  mine:    ()                 => api.get("/jit-grants/mine").then(r => r.data),
+  create:  (body)             => api.post("/jit-grants", body).then(r => r.data),
+  revoke:  (id)               => api.post(`/jit-grants/${id}/revoke`).then(r => r.data),
+};
+
+// Project quotas. List returns snapshots (limit + current usage) for
+// every known quota kind in the active project. PUT and DELETE are
+// workspace-admin only on the server.
+export const Quotas = {
+  list:   ()                => api.get("/quotas").then(r => r.data),
+  set:    (kind, limit)     => api.put(`/quotas/${kind}`, { limit }).then(r => r.data),
+  unset:  (kind)            => api.delete(`/quotas/${kind}`).then(r => r.data),
+};
+
+// Custom roles + their grants. Roles are workspace-scoped; grants
+// can be either workspace or project scope.
+export const CustomRoles = {
+  catalog: ()                    => api.get("/custom-roles/catalog").then(r => r.data),
+  list:    ()                    => api.get("/custom-roles").then(r => r.data),
+  get:     (id)                  => api.get(`/custom-roles/${id}`).then(r => r.data),
+  create:  (body)                => api.post("/custom-roles", body).then(r => r.data),
+  update:  (id, body)            => api.put(`/custom-roles/${id}`, body).then(r => r.data),
+  remove:  (id)                  => api.delete(`/custom-roles/${id}`).then(r => r.data),
+  grants:  (id)                  => api.get(`/custom-roles/${id}/grants`).then(r => r.data),
+  grant:   (id, body)            => api.post(`/custom-roles/${id}/grants`, body).then(r => r.data),
+  revoke:  (id, grantId)         => api.delete(`/custom-roles/${id}/grants/${grantId}`).then(r => r.data),
+};
+
+// Cross-project workflow.fire grants (workspace-admin only).
+// Composite PK ⇒ DELETE takes a body, not a URL param.
+export const CrossProjectGrants = {
+  list:    ()                                       => api.get("/cross-project-grants").then(r => r.data),
+  create:  (callerProjectId, calleeProjectId)       => api.post("/cross-project-grants", { callerProjectId, calleeProjectId }).then(r => r.data),
+  remove:  (callerProjectId, calleeProjectId)       => api.delete("/cross-project-grants", { data: { callerProjectId, calleeProjectId } }).then(r => r.data),
+};
+
+// Resource-level grants — per-resource ACL for sharing a single
+// workflow / config / agent with a user or service account.
+export const ResourceGrants = {
+  list:    (type, id)            => api.get("/resource-grants", { params: { type, id } }).then(r => r.data),
+  create:  (body)                => api.post("/resource-grants", body).then(r => r.data),
+  update:  (id, permissions)     => api.put(`/resource-grants/${id}`, { permissions }).then(r => r.data),
+  remove:  (id)                  => api.delete(`/resource-grants/${id}`).then(r => r.data),
+};
+
+// Service accounts — project-scoped machine identities. The active
+// project is whatever the user has selected (X-Project-Id header is
+// attached by the request interceptor).
+//
+// IMPORTANT: createKey returns { token } exactly once. After the
+// caller dismisses the show-once dialog, the token is unrecoverable.
+export const ServiceAccounts = {
+  list:    ()                       => api.get("/service-accounts").then(r => r.data),
+  get:     (id)                     => api.get(`/service-accounts/${id}`).then(r => r.data),
+  create:  (body)                   => api.post("/service-accounts", body).then(r => r.data),
+  update:  (id, body)               => api.put(`/service-accounts/${id}`, body).then(r => r.data),
+  remove:  (id)                     => api.delete(`/service-accounts/${id}`).then(r => r.data),
+  // Keys
+  keys:       (id)                  => api.get(`/service-accounts/${id}/keys`).then(r => r.data),
+  createKey:  (id, body = {})       => api.post(`/service-accounts/${id}/keys`, body).then(r => r.data),
+  revokeKey:  (id, keyId)           => api.post(`/service-accounts/${id}/keys/${keyId}/revoke`).then(r => r.data),
 };
 
 /** Open the live-execution WebSocket. Includes the auth token as a

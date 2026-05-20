@@ -52,7 +52,7 @@ export default {
     // Resolve the named configuration. Configs loader decrypts secret
     // fields on the way out; we use those plaintext values only for the
     // duration of this connection — they're never persisted anywhere.
-    const configsMap = await loadConfigsMap(ctx.workspaceId);
+    const configsMap = await loadConfigsMap(ctx.workspaceId, ctx.projectId || null);
     const cfg = configsMap[config.config];
     if (!cfg) {
       throw new Error(

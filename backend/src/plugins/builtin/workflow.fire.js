@@ -118,12 +118,15 @@ export default {
     ctx._fireCount = (ctx._fireCount || 0) + 1;
     assertIterationCap(null, ctx._fireCount, "workflow.fire");
 
-    // Verify the target workflow exists, isn't soft-deleted, AND lives
-    // in the same workspace as the parent. Cross-workspace spawns are
-    // refused — that boundary is the whole point of multi-tenancy.
+    // Verify the target workflow exists, isn't soft-deleted, lives in
+    // the same workspace as the parent, AND — per RBAC v2 — either
+    // shares the parent's project or has an explicit cross-project
+    // grant (cross_project_call_grants). Cross-workspace spawns are
+    // always refused; cross-project ones are gated by the grant.
     const parentWorkspaceId = ctx?.execution?.workspaceId || null;
+    const parentProjectId   = ctx?.execution?.projectId   || null;
     const { rows } = await pool.query(
-      `SELECT id, name, workspace_id FROM graphs
+      `SELECT id, name, workspace_id, project_id FROM graphs
         WHERE id=$1 AND deleted_at IS NULL`,
       [input.workflowId],
     );
@@ -132,28 +135,71 @@ export default {
     }
     const childName        = rows[0].name;
     const childWorkspaceId = rows[0].workspace_id;
+    const childProjectId   = rows[0].project_id;
     if (parentWorkspaceId && childWorkspaceId !== parentWorkspaceId) {
       throw new Error(
         `workflow.fire: workflow ${input.workflowId} lives in a different ` +
         `workspace and cannot be spawned from this run.`,
       );
     }
+    // Cross-project gate. Same-project calls (the common case) skip
+    // the lookup entirely. Calls from a parent with no project context
+    // (legacy executions from pre-RBAC-v2 rows) are treated as same-
+    // project so they don't break — the migration backfilled their
+    // project_id, so this path is only for in-flight execs straddling
+    // the upgrade.
+    if (parentProjectId && parentProjectId !== childProjectId) {
+      const { rowCount: granted } = await pool.query(
+        `SELECT 1 FROM cross_project_call_grants
+          WHERE caller_project_id = $1 AND callee_project_id = $2`,
+        [parentProjectId, childProjectId],
+      );
+      if (!granted) {
+        throw new Error(
+          `workflow.fire: workflow "${childName}" lives in a different ` +
+          `project and this project hasn't been granted permission to ` +
+          `call into it. Ask a workspace admin to add a cross-project ` +
+          `grant at /cross-project-grants.`,
+        );
+      }
+    }
 
     // Allocate the child execution row + enqueue. Same shape that
     // /graphs/:id/execute uses, plus the `_ancestors` list so nested
     // fires from inside the child can keep enforcing depth + cycle limits.
+    //
+    // RBAC v2: the child execution belongs to the CHILD's project, not
+    // the caller's. That matches the principle that "executions live
+    // where their workflow lives" — same way quotas, audit, and config
+    // resolution will see the run.
+    //
+    // Quota: refuse the spawn when the CALLEE's project is out of
+    // daily budget. Late-import to avoid the engine/auth cycle.
+    if (childProjectId) {
+      try {
+        const { assertQuota } = await import("../../auth/quotas.js");
+        await assertQuota(childProjectId, "executions_per_day");
+      } catch (e) {
+        if (e?.code === "QUOTA_EXCEEDED") throw e;
+        // Other failures fall through — metering shouldn't fail runs.
+      }
+    }
+
     const childId    = uuid();
     const childInput = (input.input && typeof input.input === "object") ? input.input : {};
-    // Tags from this node's `tags` input are stamped on the child row.
-    // No parent-inheritance in v1 — if a fan-out wants to share a marker
-    // with its children, the author can write the tag into both the
-    // parent (Run dialog) and the workflow.fire input.
     const childTags  = normalizeTags(input.tags);
     await pool.query(
-      `INSERT INTO executions (id, graph_id, status, inputs, context, workspace_id, tags)
-       VALUES ($1,$2,'queued',$3,'{}'::jsonb,$4,$5)`,
-      [childId, input.workflowId, JSON.stringify(childInput), childWorkspaceId, childTags],
+      `INSERT INTO executions (id, graph_id, status, inputs, context,
+                                workspace_id, project_id, tags)
+       VALUES ($1,$2,'queued',$3,'{}'::jsonb,$4,$5,$6)`,
+      [childId, input.workflowId, JSON.stringify(childInput),
+       childWorkspaceId, childProjectId, childTags],
     );
+    if (childProjectId) {
+      import("../../auth/quotas.js")
+        .then(({ incrementUsage }) => incrementUsage(childProjectId, "executions_per_day", 1))
+        .catch(() => { /* metering best-effort */ });
+    }
 
     // Build the new ancestors list. The current execution's graphId is
     // appended (so a nested fire detects "we already came from there"),

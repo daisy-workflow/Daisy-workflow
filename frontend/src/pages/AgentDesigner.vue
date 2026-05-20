@@ -23,6 +23,21 @@
           <span v-if="dirty" class="q-ml-xs text-caption" style="color: var(--warning);">●</span>
         </q-toolbar-title>
         <q-space />
+        <!-- Share — per-agent ACL. Disabled until the agent has been
+             saved at least once (no id to attach grants to). -->
+        <q-btn
+          flat round dense
+          icon="share"
+          class="btn-icon q-mr-sm"
+          :disable="isNew"
+          @click="shareOpen = true"
+        >
+          <q-tooltip>{{
+            isNew
+              ? "Save the agent once before sharing"
+              : "Share with specific users"
+          }}</q-tooltip>
+        </q-btn>
         <q-btn
           unelevated
           color="primary"
@@ -113,6 +128,30 @@
             hint="Optional. Shows on the Home page."
           />
 
+          <!-- Workspace-share toggle. Visible to workspace admins ONLY
+               and only on create — same constraints as the configs
+               share toggle. A shared agent is callable from every
+               project in the workspace; pair with a shared ai.provider
+               config so the prompt + the credentials travel together. -->
+          <q-card
+            v-if="isNew && auth.user?.role === 'admin'"
+            flat bordered class="q-mt-sm"
+          >
+            <q-card-section class="q-pa-sm row items-center">
+              <q-toggle
+                v-model="form.sharedAtWorkspace"
+                color="primary"
+                label="Share with the whole workspace"
+              />
+              <q-space />
+              <q-icon name="info" class="q-mr-xs text-grey-7" />
+              <div class="text-caption text-grey-7">
+                Shared agents are usable by every project in this workspace.
+                The referenced config must also be reachable (shared or named identically in each project).
+              </div>
+            </q-card-section>
+          </q-card>
+
           <!-- Help / how to call this agent -->
           <q-card flat bordered class="q-mt-md">
             <q-card-section class="q-pa-md">
@@ -129,6 +168,15 @@
         </div>
       </q-page>
     </q-page-container>
+
+    <!-- Per-agent sharing dialog — same pattern as configs + workflows. -->
+    <ShareResourceDialog
+      v-if="!isNew"
+      v-model:open="shareOpen"
+      resource-type="agent"
+      :resource-id="route.params.id"
+      :resource-name="form.title"
+    />
   </q-layout>
 </template>
 
@@ -138,12 +186,18 @@ import { useRoute, useRouter } from "vue-router";
 import { useQuasar } from "quasar";
 import { Agents, Configs } from "../api/client";
 import MarkdownEditor from "../components/MarkdownEditor.vue";
+import ShareResourceDialog from "../components/ShareResourceDialog.vue";
+import { auth } from "../stores/auth.js";
 
 const route  = useRoute();
 const router = useRouter();
 const $q     = useQuasar();
 
 const isNew = computed(() => route.params.id === "new" || !route.params.id);
+
+// Open state for the per-resource share dialog. Toolbar Share button
+// flips it; ShareResourceDialog owns its own listing + grant flows.
+const shareOpen = ref(false);
 
 const loading   = ref(true);
 const saving    = ref(false);
@@ -167,6 +221,8 @@ const form = reactive({
   prompt:      "",
   config_name: "",
   description: "",
+  // RBAC v2 sharing flag (workspace admin only, create-only).
+  sharedAtWorkspace: false,
 });
 let original = "";
 
@@ -224,6 +280,10 @@ async function onSave() {
       config_name: form.config_name,
       description: form.description || null,
     };
+    if (isNew.value && form.sharedAtWorkspace) {
+      // Sharing is create-only; backend rejects the flag on update.
+      payload.sharedAtWorkspace = true;
+    }
     if (isNew.value) {
       const created = await Agents.create(payload);
       original = JSON.stringify(form);

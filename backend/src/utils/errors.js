@@ -30,3 +30,13 @@ export class ForbiddenError extends HttpError {
     super(403, "FORBIDDEN", message, details);
   }
 }
+
+// 409 — uniqueness collisions where the caller can recover by picking
+// a different value (e.g. project slug already taken). Distinct from
+// ValidationError so the UI can show a "name taken" hint vs a generic
+// "your input is invalid" message.
+export class ConflictError extends HttpError {
+  constructor(message = "conflict", details) {
+    super(409, "CONFLICT", message, details);
+  }
+}

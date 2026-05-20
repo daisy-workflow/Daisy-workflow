@@ -32,6 +32,7 @@
 
 import { pool } from "../db/pool.js";
 import { verifyAccessToken } from "../auth/tokens.js";
+import { isApiKeyToken, findActiveByToken, markUsed } from "../auth/apiKeys.js";
 import { UnauthorizedError, ForbiddenError } from "../utils/errors.js";
 
 /**
@@ -43,6 +44,35 @@ export async function requireUser(req, _res, next) {
   try {
     const token = extractBearer(req);
     if (!token) throw new UnauthorizedError("missing bearer token");
+
+    // ── Branch on token kind ──
+    //
+    // `dks_…` → service-account API key. Resolves through the
+    // api_keys table; the project + role are fixed at the SA, so the
+    // X-Project-Id header is IGNORED (SAs can't cross projects).
+    //
+    // Otherwise → JWT issued via /auth/login or /auth/refresh.
+    if (isApiKeyToken(token)) {
+      const sa = await findActiveByToken(token);
+      if (!sa) throw new UnauthorizedError("invalid or revoked API key");
+      // Best-effort last-used metric.
+      markUsed(sa.keyId, req.ip || null);
+      req.user = {
+        // SAs don't have a users.id, but downstream code reads .id
+        // freely. Use the service_account.id so the value is stable
+        // and meaningful for audit + per-row provenance.
+        id:                 sa.serviceAccountId,
+        email:              sa.serviceAccountName,   // for display in audit / logs
+        kind:               "service_account",
+        role:               sa.role,                  // built-in role within the project
+        workspaceId:        sa.workspaceId,
+        projectId:          sa.projectId,
+        status:             "active",
+        serviceAccountId:   sa.serviceAccountId,
+        apiKeyId:           sa.keyId,
+      };
+      return next();
+    }
 
     let payload;
     try {
@@ -71,15 +101,52 @@ export async function requireUser(req, _res, next) {
     // payload — switching workspace forces a refresh on the client.
     const workspaceId = payload.ws || u.workspace_id;
 
+    // RBAC v2: project context. Resolution order:
+    //   1. Header X-Project-Id (overrides anything else — used by
+    //      tools that operate across projects on behalf of a user).
+    //   2. Query / param `projectId` is intentionally NOT consulted
+    //      here — route-specific code handles that for routes that
+    //      take it from the URL path (e.g. /projects/:id/...).
+    //   3. JWT `proj` claim (the UI's last-active project).
+    //
+    // If we land on a project id, validate that the user actually
+    // belongs to it. Workspace admins implicitly belong to every
+    // project in their workspace (see auth/permissions.js).
+    let projectId = null;
+    const headerProject = req.headers["x-project-id"];
+    if (headerProject) {
+      projectId = String(headerProject);
+    } else if (payload.proj) {
+      projectId = payload.proj;
+    }
+
     req.user = {
       id:          u.id,
       email:       u.email,
+      kind:        "user",
       role:        u.role,
       workspaceId,
+      projectId,
       status:      u.status,
     };
     next();
   } catch (e) { next(e); }
+}
+
+/**
+ * Guard that the request carries a project context. Use after
+ * requireUser on routes that need to scope to a specific project but
+ * don't take the project id from the path themselves (e.g. POST /graphs).
+ * Returns 400 with `{ need: "projectId" }` when missing.
+ */
+export function requireProject(req, _res, next) {
+  if (!req.user?.projectId) {
+    return next(new ForbiddenError(
+      "no active project — supply X-Project-Id header or switch project",
+      { need: "projectId" },
+    ));
+  }
+  next();
 }
 
 /**
