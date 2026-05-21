@@ -312,6 +312,140 @@ export async function getPluginCatalog({ token }) {
   return call({ token, method: "GET", path: "/plugins/catalog" });
 }
 
+// ── Service accounts ────────────────────────────────────────────
+
+export async function createServiceAccount({ token, name, description, role = "editor" }) {
+  return call({ token, method: "POST", path: "/service-accounts",
+    body: { name, description, role } });
+}
+
+export async function listServiceAccounts({ token }) {
+  return call({ token, method: "GET", path: "/service-accounts" });
+}
+
+export async function deleteServiceAccount({ token, id }) {
+  return call({ token, method: "DELETE", path: `/service-accounts/${id}` });
+}
+
+export async function mintServiceAccountKey({ token, id, label }) {
+  return call({ token, method: "POST", path: `/service-accounts/${id}/keys`,
+    body: { label } });
+}
+
+export async function revokeServiceAccountKey({ token, id, keyId }) {
+  return call({ token, method: "POST", path: `/service-accounts/${id}/keys/${keyId}/revoke` });
+}
+
+// ── Custom roles ────────────────────────────────────────────────
+
+export async function listCustomRoleCatalog({ token }) {
+  return call({ token, method: "GET", path: "/custom-roles/catalog" });
+}
+
+export async function createCustomRole({ token, name, description, permissions }) {
+  return call({ token, method: "POST", path: "/custom-roles",
+    body: { name, description, permissions } });
+}
+
+export async function listCustomRoles({ token }) {
+  return call({ token, method: "GET", path: "/custom-roles" });
+}
+
+export async function deleteCustomRole({ token, id }) {
+  return call({ token, method: "DELETE", path: `/custom-roles/${id}` });
+}
+
+// ── Cross-project grants ────────────────────────────────────────
+
+export async function listCrossProjectGrants({ token }) {
+  return call({ token, method: "GET", path: "/cross-project-grants" });
+}
+
+export async function grantCrossProject({ token, callerProjectId, calleeProjectId }) {
+  return call({ token, method: "POST", path: "/cross-project-grants",
+    body: { callerProjectId, calleeProjectId } });
+}
+
+export async function revokeCrossProject({ token, callerProjectId, calleeProjectId }) {
+  return call({ token, method: "DELETE", path: "/cross-project-grants",
+    body: { callerProjectId, calleeProjectId } });
+}
+
+// ── JIT elevation ───────────────────────────────────────────────
+
+export async function createJitGrant({ token, userId, scopeType, scopeId, role, reason, durationMinutes }) {
+  return call({ token, method: "POST", path: "/jit-grants",
+    body: { userId, scopeType, scopeId, role, reason, durationMinutes } });
+}
+
+export async function listJitGrants({ token }) {
+  return call({ token, method: "GET", path: "/jit-grants" });
+}
+
+export async function listMyJitGrants({ token }) {
+  return call({ token, method: "GET", path: "/jit-grants/mine" });
+}
+
+export async function revokeJitGrant({ token, id }) {
+  return call({ token, method: "POST", path: `/jit-grants/${id}/revoke`, body: {} });
+}
+
+// ── Quotas ──────────────────────────────────────────────────────
+
+export async function listQuotas({ token }) {
+  return call({ token, method: "GET", path: "/quotas" });
+}
+
+export async function setQuota({ token, kind, limit }) {
+  return call({ token, method: "PUT", path: `/quotas/${kind}`,
+    body: { limit } });
+}
+
+export async function deleteQuota({ token, kind }) {
+  return call({ token, method: "DELETE", path: `/quotas/${kind}` });
+}
+
+// ── SAML config ─────────────────────────────────────────────────
+
+export async function getSamlConfig({ token }) {
+  return call({ token, method: "GET", path: "/saml-configs" });
+}
+
+export async function setSamlConfig({ token, ...body }) {
+  return call({ token, method: "PUT", path: "/saml-configs", body });
+}
+
+export async function deleteSamlConfig({ token }) {
+  return call({ token, method: "DELETE", path: "/saml-configs" });
+}
+
+// ── Compliance + residency ──────────────────────────────────────
+
+export async function getComplianceSettings({ token }) {
+  return call({ token, method: "GET", path: "/compliance" });
+}
+
+export async function setComplianceSettings({ token, mode, residency, settings }) {
+  return call({ token, method: "PUT", path: "/compliance",
+    body: { mode, residency, settings } });
+}
+
+export async function exportUserData({ token, userId }) {
+  return call({ token, method: "GET", path: `/compliance/users/${userId}/export` });
+}
+
+export async function eraseUser({ token, userId }) {
+  return call({ token, method: "DELETE", path: `/compliance/users/${userId}` });
+}
+
+// ── Execution control (HITL resume) ─────────────────────────────
+
+export async function respondToWaitingNode({ token, executionId, nodeName, data }) {
+  return call({ token, method: "POST",
+    path: `/executions/${executionId}/nodes/${nodeName}/respond`,
+    body: { data } });
+}
+
 // ── Helpers ──────────────────────────────────────────────────────
 
 // The DSL validator rejects DAGs with zero nodes (schema requires
