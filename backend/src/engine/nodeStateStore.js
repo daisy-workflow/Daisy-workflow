@@ -34,11 +34,22 @@ export async function upsertNodeState(executionId, nodeName, partial) {
   // same upsert; COALESCE ensures partial writes (RUNNING with no
   // attempts, then FAILED with attempts) compose correctly without
   // wiping prior fields.
+  //
+  // project_id was made NOT NULL by migration 021 but the callers of
+  // upsertNodeState don't all have it handy. We source it from the
+  // existing executions row via a scalar subquery — the executions
+  // row is always inserted + enqueued before any node ever runs, so
+  // the subquery resolves to a real value on the first INSERT. On
+  // CONFLICT the column is left untouched (it never changes mid-run).
   await pool.query(
     `INSERT INTO node_states
-        (execution_id, node_name, status, attempts, resolved_inputs,
+        (execution_id, node_name, project_id, status, attempts, resolved_inputs,
          output, error, reason, started_at, finished_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9,$10,NOW())
+     VALUES (
+        $1, $2,
+        (SELECT project_id FROM executions WHERE id = $1),
+        $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, NOW()
+     )
      ON CONFLICT (execution_id, node_name) DO UPDATE SET
         status          = COALESCE(EXCLUDED.status,          node_states.status),
         attempts        = COALESCE(EXCLUDED.attempts,        node_states.attempts),

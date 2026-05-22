@@ -84,7 +84,14 @@ router.post("/", requireRole("admin", "editor"), async (req, res, next) => {
   try {
     const { title, prompt, config_name, description, sharedAtWorkspace = false,
             guardrails_override, prompt_template_id } = req.body || {};
-    validatePayload({ title, prompt, config_name }, /* requireAll */ true);
+    // `prompt` is required EXCEPT when the agent binds to a prompt
+    // template — in that case the body comes from prompt_templates.body
+    // at render time and the inline prompt column is allowed to be
+    // empty. Matches the UI's `canSave` rule.
+    validatePayload(
+      { title, prompt, config_name, prompt_template_id },
+      /* requireAll */ true,
+    );
 
     // Only workspace admins can author workspace-shared agents — same
     // privilege-escalation guard as configs.
@@ -149,7 +156,24 @@ router.put("/:id", requireRole("admin", "editor"), async (req, res, next) => {
     if (config_name !== undefined) {
       await ensureConfigExists(config_name, req.user.workspaceId, req.user.projectId);
     }
-    validatePayload({ title, prompt, config_name }, /* requireAll */ false);
+    // On update, prompt_template_id may either come on the request
+    // body (the author just bound a template) OR already live on the
+    // row (binding was set earlier). Either case relaxes the
+    // empty-prompt rule. Pulling the existing row's binding so we
+    // don't false-reject an in-place prompt clear when the row was
+    // already template-backed.
+    let effectiveTemplateId = prompt_template_id;
+    if (effectiveTemplateId === undefined) {
+      const { rows: r } = await pool.query(
+        "SELECT prompt_template_id FROM agents WHERE id=$1 AND workspace_id=$2",
+        [req.params.id, req.user.workspaceId],
+      );
+      effectiveTemplateId = r[0]?.prompt_template_id || null;
+    }
+    validatePayload(
+      { title, prompt, config_name, prompt_template_id: effectiveTemplateId },
+      /* requireAll */ false,
+    );
 
     const sets = [], params = [];
     if (title       !== undefined) { params.push(title.trim()); sets.push(`title = $${params.length}`); }
@@ -231,10 +255,22 @@ router.delete("/:id", requireRole("admin", "editor"), async (req, res, next) => 
 
 // ── helpers ───────────────────────────────────────────────────────────
 
-function validatePayload({ title, prompt, config_name }, requireAll) {
+function validatePayload({ title, prompt, config_name, prompt_template_id }, requireAll) {
+  // When the agent is bound to a prompt template, the inline `prompt`
+  // column is allowed to be empty — the live system prompt is
+  // rendered from prompt_templates.body at call time. The UI's
+  // `canSave` rule mirrors this; keep them in sync.
+  const promptRequired = !prompt_template_id;
   if (requireAll) {
-    if (!title || !prompt || !config_name) {
-      throw new ValidationError("title, prompt, and config_name are required");
+    const missing = [];
+    if (!title) missing.push("title");
+    if (promptRequired && !prompt) missing.push("prompt");
+    if (!config_name) missing.push("config_name");
+    if (missing.length) {
+      throw new ValidationError(promptRequired
+        ? "title, prompt, and config_name are required"
+        : `${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} required` +
+          " (prompt may be empty when prompt_template_id is set)");
     }
   }
   if (title !== undefined) {
@@ -244,7 +280,14 @@ function validatePayload({ title, prompt, config_name }, requireAll) {
     }
   }
   if (prompt !== undefined) {
-    if (typeof prompt !== "string" || !prompt.trim()) throw new ValidationError("prompt must be a non-empty string");
+    if (typeof prompt !== "string") {
+      throw new ValidationError("prompt must be a string");
+    }
+    // Empty prompt is OK iff the agent has (or is being bound to)
+    // a prompt template. Otherwise it must have content.
+    if (!prompt.trim() && promptRequired) {
+      throw new ValidationError("prompt must be non-empty (or set prompt_template_id to use a template)");
+    }
   }
   if (config_name !== undefined) {
     if (typeof config_name !== "string" || !config_name.trim()) throw new ValidationError("config_name must be a non-empty string");
