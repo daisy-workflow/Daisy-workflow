@@ -20,70 +20,37 @@
 // below. The /chat/completions and /messages endpoints are served
 // by a tiny embedded responder we boot from the test process.
 
-import { createServer } from "node:http";
+// (No longer imports node:http — the mock is a sidecar container now.)
 
+// Internal hostname + port the worker container reaches the mock
+// LLM on. The mock-llm sidecar in docker-compose.test.yml listens on
+// 0.0.0.0:9123 inside its container; the compose network resolves
+// `mock-llm` to that container's IP. No host.docker.internal voodoo.
+//
+// MOCK_LLM_URL is what gets stored in the ai.provider config's
+// `baseUrl` — the worker (also in the docker network) reads it from
+// the config and uses it as-is. The test runner (on the host) doesn't
+// fetch this URL directly; it talks to the API on 127.0.0.1:3001.
 const MOCK_PORT = parseInt(process.env.MOCK_LLM_PORT || "9123", 10);
-export const MOCK_LLM_URL = `http://host.docker.internal:${MOCK_PORT}/v1`;
+export const MOCK_LLM_URL = `http://mock-llm:${MOCK_PORT}/v1`;
 
-let server = null;
+// The mock LLM is now a sidecar Docker container managed by
+// docker-compose.test.yml — there's nothing to start in-process.
+// These functions stay for back-compat with spec files that already
+// call `await startMockLlm()` in their beforeAll; they're no-ops.
+
+/** No-op (the mock is a long-lived sidecar container, not in-process). */
+export async function startMockLlm() { return MOCK_LLM_URL; }
+
+/** No-op (the sidecar is torn down by `docker compose down`). */
+export async function stopMockLlm() { /* nothing */ }
 
 /**
- * Boot the mock LLM responder. Idempotent — safe to call from every
- * test file's global setup; reuses the same server if it's already
- * listening.
- *
- * The mock answers BOTH the OpenAI Chat Completions shape and the
- * Anthropic Messages shape, so the same fake URL works regardless of
- * which provider the agent's config selects.
+ * Report how many requests the mock container has served. Hits the
+ * published port (9124 on the host → 9123 in the container) via a
+ * /diagnostic endpoint... but we don't expose one. Instead this
+ * returns null and the spec assertion falls back to its
+ * "check worker logs" message. If you find you need a hit-count
+ * for assertions, add a counter + GET /count to mock-llm/server.js.
  */
-export async function startMockLlm() {
-  if (server && server.listening) return MOCK_LLM_URL;
-  server = createServer((req, res) => {
-    let body = "";
-    req.on("data", (c) => (body += c));
-    req.on("end", () => {
-      const url = req.url || "";
-      let payload;
-      if (url.includes("/chat/completions")) {
-        // OpenAI Chat Completions shape.
-        payload = {
-          id:      "chatcmpl-mock",
-          model:   "gpt-4o-mini",
-          choices: [{
-            index: 0,
-            message: { role: "assistant", content: '{"result":"mocked","confidence":0.9}' },
-            finish_reason: "stop",
-          }],
-          usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 },
-        };
-      } else if (url.includes("/messages")) {
-        // Anthropic Messages shape.
-        payload = {
-          id:           "msg_mock",
-          model:        "claude-mock",
-          content:      [{ type: "text", text: '{"result":"mocked","confidence":0.9}' }],
-          stop_reason:  "end_turn",
-          usage:        { input_tokens: 12, output_tokens: 8 },
-        };
-      } else {
-        res.writeHead(404, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: { message: `mock-llm: unknown path ${url}` } }));
-        return;
-      }
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(payload));
-    });
-  });
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(MOCK_PORT, () => resolve());
-  });
-  return MOCK_LLM_URL;
-}
-
-/** Shut down the mock — called from globalTeardown. */
-export async function stopMockLlm() {
-  if (!server) return;
-  await new Promise((r) => server.close(r));
-  server = null;
-}
+export function mockRequestCount() { return null; }

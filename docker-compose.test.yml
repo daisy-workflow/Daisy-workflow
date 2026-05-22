@@ -16,7 +16,14 @@
 
 services:
   postgres-test:
-    image: postgres:16-alpine
+    # pgvector/pgvector ships Postgres + the `vector` extension
+    # pre-installed. Migration 026 (knowledge_bases) runs
+    # `CREATE EXTENSION IF NOT EXISTS vector` on first boot and would
+    # fail against plain postgres:16-alpine because the extension
+    # binaries aren't there. The pgvector image is a drop-in for the
+    # official postgres image — same env vars, same data dir, same
+    # connection protocol.
+    image: pgvector/pgvector:pg16
     container_name: dag_postgres_test
     environment:
       POSTGRES_USER: dag
@@ -44,6 +51,32 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+
+  # In-network mock LLM. The earlier in-process variant lived in the
+  # Playwright runner on the host and was reached via
+  # host.docker.internal — flaky on macOS Docker Desktop. Pinning it
+  # to a dedicated container removes every host-network variable; the
+  # worker reaches it on stable Docker DNS at `mock-llm:9123`.
+  #
+  # Port 9124 is published so the Playwright runner can also hit it
+  # for diagnostic curls — not required for the tests themselves.
+  mock-llm:
+    build:
+      context: ./tests/mock-llm
+    container_name: dag_mock_llm_test
+    ports:
+      - "9124:9123"
+    healthcheck:
+      # TCP-port probe via Node (definitely installed in the image).
+      # BusyBox `wget` on alpine doesn't handle --post-data + --header
+      # the way GNU wget does, so a POST-based probe is flaky here.
+      # All we really need is "is the server accepting connections" —
+      # that's what this checks.
+      test: ["CMD-SHELL", "node -e \"require('net').connect(9123).on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))\""]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   # Migrate-and-exit container — runs `npm run migrate` against the
   # fresh DB, then exits 0. The API and worker `depends_on` this so
@@ -79,11 +112,27 @@ services:
       DATABASE_URL: postgres://dag:dag@postgres-test:5432/dag_engine_test
       REDIS_URL: redis://redis-test:6379
       JWT_SECRET: test-jwt-secret-not-for-prod
+      # CONFIG_SECRET silences the "using a built-in dev KEK" warning
+      # from the local KMS provider. Tests don't need real HSM custody —
+      # just any stable string so the dev-key fallback isn't triggered.
+      CONFIG_SECRET: test-config-secret-not-for-prod-32-chars
       # Permissive CORS — Playwright drives a different origin (5174).
       # The server.js code already reflects any origin in dev/test.
       LOG_LEVEL: warn
+      # Disable rate limits — 6 specs × N retries × admin-login in
+      # rapid succession trips the per-IP + per-email login caps
+      # (10/min and 5/min respectively). Tests don't need rate-limit
+      # coverage; the unit-test suite in backend/test exercises the
+      # limiter logic in isolation.
+      RATE_LIMIT_ENABLED: "false"
     ports:
       - "3001:3000"
+    # The agent-call smoke test points the agent's baseUrl at
+    # host.docker.internal:9123 (the in-process mock LLM listener).
+    # Docker Desktop on Mac/Windows resolves that hostname out of
+    # the box; on Linux it needs the explicit `host-gateway` alias.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/readyz"]
       interval: 3s
@@ -102,12 +151,18 @@ services:
         condition: service_completed_successfully
       redis-test:
         condition: service_healthy
+      mock-llm:
+        condition: service_healthy
     environment:
       NODE_ENV: test
       DATABASE_URL: postgres://dag:dag@postgres-test:5432/dag_engine_test
       REDIS_URL: redis://redis-test:6379
       JWT_SECRET: test-jwt-secret-not-for-prod
+      # Must match api-test's CONFIG_SECRET — both processes need the
+      # same KEK to encrypt/decrypt the same configs row.
+      CONFIG_SECRET: test-config-secret-not-for-prod-32-chars
       LOG_LEVEL: warn
+      RATE_LIMIT_ENABLED: "false"
       # Seed an admin so the Playwright suite can log in immediately.
       # First worker boot picks these up via runIfRequested(); reruns
       # are no-ops because the user already exists.
@@ -116,3 +171,7 @@ services:
       BOOTSTRAP_ADMIN_PASSWORD: "Test12345!Test"
       BOOTSTRAP_ADMIN_WORKSPACE: "Test Workspace"
     command: ["node", "src/worker.js"]
+    # Same host-gateway alias as api-test — the worker is what
+    # actually executes the agent plugin's HTTP call to the mock LLM.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

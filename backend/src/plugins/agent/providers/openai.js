@@ -43,7 +43,8 @@ function buildMessages(system, messages, images) {
 
 export async function call({ cfg, system, messages, maxTokens, images }) {
   const baseUrl = (cfg.baseUrl || "https://api.openai.com/v1").replace(/\/$/, "");
-  const res = await fetch(`${baseUrl}/chat/completions`, {
+  const url = `${baseUrl}/chat/completions`;
+  const res = await fetch(url, {
     method: "POST",
     headers: {
       "content-type":  "application/json",
@@ -62,12 +63,22 @@ export async function call({ cfg, system, messages, maxTokens, images }) {
   }
   const data = await res.json();
   const text = data?.choices?.[0]?.message?.content || "";
+  const inputTokens  = data?.usage?.prompt_tokens     ?? 0;
+  const outputTokens = data?.usage?.completion_tokens ?? 0;
+  // When the response looks empty (no text + no tokens) we log what
+  // came back so a misconfigured baseUrl / proxy / mock mismatch
+  // can be diagnosed from worker logs in one read. Only fires on the
+  // suspicious case; the common happy path stays silent.
+  if (!text && inputTokens === 0 && outputTokens === 0) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[openai-provider] empty response from ${url} — ` +
+      `status=${res.status}, body=${sliceLast(JSON.stringify(data), 400)}`,
+    );
+  }
   return {
     text,
-    usage: {
-      inputTokens:  data?.usage?.prompt_tokens     ?? 0,
-      outputTokens: data?.usage?.completion_tokens ?? 0,
-    },
+    usage: { inputTokens, outputTokens },
   };
 }
 

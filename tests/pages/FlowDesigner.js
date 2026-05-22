@@ -19,10 +19,20 @@ export class FlowDesigner {
   }
 
   runButton() {
-    // The Run / Execute control. Tries an accessible-name match
-    // first, then falls back to the icon button containing
-    // play_arrow if the label text is unstable.
-    return this.page.getByRole("button", { name: /run|execute/i }).first();
+    // FlowDesigner's Run button is `flat round dense icon="play_arrow"`
+    // — no visible label, just a q-tooltip and the Material icon. The
+    // accessible-name match fails because Quasar doesn't auto-set an
+    // aria-label on icon-only buttons.
+    //
+    // Selector chain (most specific to broadest fallback):
+    //   1. The <button> ancestor of the play_arrow icon — works for
+    //      the current markup.
+    //   2. The button whose tooltip text matches "Run" — works even
+    //      if the icon name changes.
+    return this.page
+      .locator('button:has(i.q-icon:has-text("play_arrow"))')
+      .or(this.page.locator('button').filter({ has: this.page.locator('.q-tooltip:has-text("Run")') }))
+      .first();
   }
 
   async run() {

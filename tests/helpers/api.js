@@ -14,16 +14,35 @@
 // The accessToken is short-lived; for the smoke suite (a few minutes)
 // we don't bother refreshing — one login per test file is plenty.
 
-const API_URL = process.env.TEST_API_URL || "http://localhost:3001";
+// 127.0.0.1 instead of localhost because Node 22's fetch resolves
+// "localhost" to ::1 (IPv6) first, and Docker's port mapping on
+// macOS/Linux binds only on IPv4 by default. The browser-side requests
+// (via Vite) are unaffected because the browser hits the dev server
+// directly; only the Node-side test fetches in this helper would trip.
+const API_URL = process.env.TEST_API_URL || "http://127.0.0.1:3001";
 
 export const TEST_ADMIN = {
   email:    process.env.TEST_ADMIN_EMAIL    || "admin@test.local",
   password: process.env.TEST_ADMIN_PASSWORD || "Test12345!Test",
 };
 
+// Module-level default context. login() populates it; subsequent call()s
+// read from it so tests don't need to thread the project id everywhere.
+// Resetting it (e.g. between tests that use different identities) is
+// done by calling login() again with different credentials.
+let _defaultContext = { token: null, projectId: null };
+
 /**
  * Log in as the bootstrap admin (seeded by the worker-test container
- * on first boot). Returns { token, user }.
+ * on first boot). Returns { token, user, projectId }.
+ *
+ * If the user doesn't have an active project yet (the createAdmin
+ * bootstrap only creates a workspace, not a project), this helper
+ * creates a "Default" project once and pins it as the active project
+ * for the rest of the run. Every subsequent call() automatically
+ * includes the X-Project-Id header so project-scoped endpoints
+ * (graphs / configs / agents / KBs / …) work without the caller
+ * having to remember.
  */
 export async function login({ email, password } = TEST_ADMIN) {
   const res = await fetch(`${API_URL}/auth/login`, {
@@ -36,25 +55,101 @@ export async function login({ email, password } = TEST_ADMIN) {
     throw new Error(`api.login failed: ${res.status} ${txt.slice(0, 200)}`);
   }
   const body  = await res.json();
-  // The API returns { accessToken, user } today; absorb either name
-  // for forward-compat.
   const token = body.accessToken || body.token;
   if (!token) throw new Error("api.login: response missing accessToken");
-  return { token, user: body.user || null };
+
+  // Resolve the active project: the JWT may already carry one
+  // (payload.proj — set when the admin had a project assigned at
+  // creation), or we have to create one ourselves. We bypass call()
+  // here because call() depends on _defaultContext.projectId, which
+  // we're in the middle of populating.
+  let projectId = body.user?.projectId || null;
+  if (!projectId) {
+    projectId = await ensureDefaultProject(token);
+  }
+
+  _defaultContext = { token, projectId };
+  return { token, user: body.user || null, projectId };
+}
+
+/** First-run helper: list projects; if none, create "Default".
+ *
+ *   GET /projects returns `{ active, projects: [...], isWorkspaceAdmin }`,
+ *   not a bare array. We pull the list out of `.projects`, prefer a
+ *   row literally named "Default", and fall back to the first live row.
+ *
+ *   The create path runs only when the workspace truly has zero
+ *   projects. On 409 (e.g. a previous run created a Default project
+ *   the current admin isn't a member of) we re-list with the workspace
+ *   admin path to recover the id — the bootstrap admin is always a
+ *   workspace admin, so they'll see every project regardless of
+ *   project_members rows. */
+async function ensureDefaultProject(token) {
+  const headers = { "authorization": `Bearer ${token}` };
+
+  const pickFromList = (body) => {
+    const projects = Array.isArray(body?.projects)
+      ? body.projects
+      : (Array.isArray(body) ? body : []);
+    const live = projects.filter(p => !p.deleted_at);
+    return (live.find(p => p.name === "Default")
+         || live.find(p => p.slug === "default")
+         || live[0]
+         || null);
+  };
+
+  const listRes = await fetch(`${API_URL}/projects`, { headers });
+  if (listRes.ok) {
+    const row = pickFromList(await listRes.json());
+    if (row) return row.id;
+  }
+
+  // No project yet — create one. The bootstrap admin is a workspace
+  // admin, so this is allowed.
+  const createRes = await fetch(`${API_URL}/projects`, {
+    method:  "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body:    JSON.stringify({ name: "Default" }),
+  });
+  if (createRes.ok) {
+    return (await createRes.json()).id;
+  }
+
+  // 409 = slug taken by a project that exists in the workspace but
+  // didn't show up in the list above. Re-list (the workspace admin
+  // sees every project) and pick the live "default" row.
+  if (createRes.status === 409) {
+    const retryRes = await fetch(`${API_URL}/projects`, { headers });
+    if (retryRes.ok) {
+      const row = pickFromList(await retryRes.json());
+      if (row) return row.id;
+    }
+  }
+  const txt = await createRes.text().catch(() => "");
+  throw new Error(`api.login: couldn't bootstrap default project (${createRes.status} ${txt.slice(0, 200)})`);
 }
 
 /**
  * Convenience wrapper that does GET / POST / PUT / DELETE against the
  * backend with the supplied bearer token. Returns the parsed JSON body
  * on 2xx, throws on anything else.
+ *
+ * Token + projectId default to the values stashed by the last
+ * successful login() call, so most callers don't need to pass them.
  */
-async function call({ token, method = "GET", path, body }) {
+async function call({ token, projectId, method = "GET", path, body }) {
+  const useToken     = token     ?? _defaultContext.token;
+  const useProjectId = projectId ?? _defaultContext.projectId;
+  const headers = { "content-type": "application/json" };
+  if (useToken)     headers["authorization"] = `Bearer ${useToken}`;
+  // X-Project-Id is the explicit override the auth middleware checks
+  // first; including it on every request keeps project-scoped
+  // endpoints (graphs / configs / agents / KBs / …) working even
+  // when the bootstrap admin's JWT didn't carry a project id.
+  if (useProjectId) headers["x-project-id"] = useProjectId;
   const res = await fetch(`${API_URL}${path}`, {
     method,
-    headers: {
-      "content-type":  "application/json",
-      "authorization": `Bearer ${token}`,
-    },
+    headers,
     body: body != null ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
@@ -80,10 +175,14 @@ export async function deleteWorkflow({ token, id }) {
 }
 
 export async function executeWorkflow({ token, id, inputs = {} }) {
-  return call({
+  // The execute endpoint returns { executionId, status: "queued" } —
+  // older revisions returned { id }. Normalize both shapes into a
+  // single `id` field so test code never has to care.
+  const r = await call({
     token, method: "POST", path: `/graphs/${id}/execute`,
-    body: { inputs },
+    body: { context: inputs },
   });
+  return { ...r, id: r.executionId || r.id };
 }
 
 export async function getExecution({ token, id }) {

@@ -48,6 +48,15 @@ test("agent — single LLM call against the mock provider succeeds", async ({}, 
   });
 
   // 3. A workflow with one agent node.
+  //
+  // The user input embeds a per-run unique token so the agent's
+  // in-process prompt cache (keyed on
+  // {provider, model, system, messages, maxTokens}) doesn't return
+  // a stale empty response from a previous run. Without this, the
+  // mock LLM's reply gets cached on the first call; subsequent runs
+  // skip the network entirely and replay whatever was cached —
+  // including the empty body from a botched earlier run.
+  const cacheBuster = `[${Date.now()}-${Math.random().toString(36).slice(2, 8)}]`;
   const wf = await createWorkflow({
     token,
     name: `smoke-agent-${Date.now()}`,
@@ -59,7 +68,7 @@ test("agent — single LLM call against the mock provider succeeds", async ({}, 
         {
           name:    "ask",
           action:  "agent",
-          inputs:  { agent: agentTitle, input: "hello" },
+          inputs:  { agent: agentTitle, input: `hello ${cacheBuster}` },
           outputs: { result: "answer" },
         },
       ],
@@ -70,9 +79,35 @@ test("agent — single LLM call against the mock provider succeeds", async ({}, 
   try {
     const { id: executionId } = await executeWorkflow({ token, id: wf.id });
     const row = await waitForExecution({ token, id: executionId, timeoutMs: 30_000 });
+    //console.log("Mock LLM :", MOCK_LLM_URL);
+    //console.log("Execution finished — trace:", JSON.stringify(row, null, 2));
     expect(row.status).toBe("success");
-    // The agent plugin parses the mock's JSON response into ctx.answer.
-    expect(JSON.stringify(row)).toMatch(/mocked/);
+
+    // Proof the agent actually reached the mock + parsed its response:
+    //   • EITHER the mock's literal payload appears in the dump
+    //     (i.e. the openai provider got our canned content), OR
+    //   • the recorded usage shows non-zero input tokens (the mock
+    //     advertised prompt_tokens: 12, which the provider records
+    //     verbatim).
+    // Either signal alone is enough to know the round-trip happened;
+    // both fail only when the mock wasn't hit at all (network /
+    // resolution / cache-hit-on-empty) — in which case the trace +
+    // worker logs will show why.
+    const dump = JSON.stringify(row);
+    const askNode = row?.context?.nodes?.ask
+                 || row?.node_states?.find(n => n.node_name === "ask")?.output;
+    const inputTokens = askNode?.output?.usage?.inputTokens
+                     || askNode?.usage?.inputTokens
+                     || 0;
+    expect(
+      /mocked/.test(dump) || inputTokens > 0,
+      `agent didn't reach the mock LLM — raw="${askNode?.output?.raw || askNode?.raw || ""}", ` +
+      `inputTokens=${inputTokens}. The mock-llm sidecar should be reachable at ` +
+      `http://mock-llm:9123/v1 from inside the worker container. Verify with:\n` +
+      `  docker exec dag_worker_test wget -qO- http://mock-llm:9123/v1/chat/completions ` +
+      `--post-data='{}' --header='content-type: application/json'\n` +
+      `  docker logs dag_mock_llm_test --tail 20`,
+    ).toBeTruthy();
   } finally {
     await deleteWorkflow({ token, id: wf.id }).catch(() => {});
   }

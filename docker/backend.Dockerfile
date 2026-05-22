@@ -21,8 +21,17 @@ COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev
 
 # Copy the application source.
-COPY src ./src
-COPY migrations ./migrations
+#
+# --chmod=0755 forces world-readable + dir-traversable perms because
+# COPY otherwise preserves whatever mode the host file had, and on
+# some hosts (notably macOS with restrictive umasks, or this repo
+# when authored from a sandbox that creates files mode 0600) files
+# arrive unreadable to `USER node` (uid 1000) in the runtime image.
+# Symptom is `EACCES: permission denied` on every plugin import at
+# worker boot. Forcing 0755 makes the image reproducible regardless
+# of the build context's umask.
+COPY --chmod=0755 src        ./src
+COPY --chmod=0755 migrations ./migrations
 
 # ---------- runtime ----------
 FROM node:22-alpine AS runtime
@@ -49,6 +58,13 @@ ENV NODE_ENV=production \
     PORT=3000
 
 EXPOSE 3000
+
+# The eventLog module appends to /app/logs/node-events.log. Create the
+# directory + chown to `node` BEFORE dropping privileges so the worker
+# can write to it. Without this the runtime logs every minute with
+# "event log stream error: ENOENT" (harmless — logNodeEvent's
+# try/catch keeps the run going — but noisy and obscures real errors).
+RUN mkdir -p /app/logs && chown -R node:node /app/logs
 
 # Drop privileges. The `node` user is created by the official image.
 USER node

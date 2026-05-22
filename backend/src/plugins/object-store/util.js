@@ -123,11 +123,15 @@ async function buildS3Client(cfg) {
     async putStream(bucket, key, stream, contentType, contentLength) {
       // Two paths:
       //   • Known length (typical when piping a fetch response with
-      //     Content-Length) → single PutObject with explicit length.
-      //     Cheapest, S3 streams the body straight to the bucket.
+      //     Content-Length — what OpenAI's TTS endpoint always sends
+      //     and what every in-tree caller exercises today) → single
+      //     PutObject with explicit length. Cheapest, S3 streams the
+      //     body straight to the bucket.
       //   • Unknown length → @aws-sdk/lib-storage Upload, which does
-      //     a multipart upload under the hood. Lazy-imported so a
-      //     deployment that never streams to S3 doesn't need it.
+      //     a multipart upload under the hood. Not a hard dependency
+      //     because no in-tree code path needs it; deployments that
+      //     genuinely stream unbounded data to S3 must `npm install
+      //     @aws-sdk/lib-storage` separately.
       if (contentLength != null && Number.isFinite(contentLength)) {
         const r = await s3.send(new S3.PutObjectCommand({
           Bucket: bucket, Key: key,
@@ -141,8 +145,11 @@ async function buildS3Client(cfg) {
       try { LibStorage = await import("@aws-sdk/lib-storage"); }
       catch {
         throw new Error(
-          "object.store(s3): unknown-length streaming requires @aws-sdk/lib-storage. " +
-          "Run `npm install @aws-sdk/lib-storage` or pass an explicit contentLength.",
+          "object.store(s3): unknown-length streaming requires the optional " +
+          "@aws-sdk/lib-storage package. Install it with `npm install " +
+          "@aws-sdk/lib-storage` in the backend, OR pass an explicit " +
+          "contentLength so the cheaper single-PutObject path is used " +
+          "(OpenAI TTS always provides Content-Length, for example).",
         );
       }
       const upload = new LibStorage.Upload({
