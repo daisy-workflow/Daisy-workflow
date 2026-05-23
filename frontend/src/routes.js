@@ -19,17 +19,10 @@ import TriggerDesigner from "./pages/TriggerDesigner.vue";
 import ConfigDesigner from "./pages/ConfigDesigner.vue";
 import AgentDesigner  from "./pages/AgentDesigner.vue";
 import LoginPage      from "./pages/LoginPage.vue";
-import UsersPage      from "./pages/UsersPage.vue";
-import AuditPage      from "./pages/AuditPage.vue";
-import PluginsPage    from "./pages/PluginsPage.vue";
-import WorkspaceSettings from "./pages/WorkspaceSettings.vue";
-import ProjectsPage      from "./pages/ProjectsPage.vue";
-import ServiceAccountsPage from "./pages/ServiceAccountsPage.vue";
-import ProjectPluginsPage   from "./pages/ProjectPluginsPage.vue";
-import CustomRolesPage      from "./pages/CustomRolesPage.vue";
-import CrossProjectGrantsPage from "./pages/CrossProjectGrantsPage.vue";
-import QuotasPage             from "./pages/QuotasPage.vue";
-import JitGrantsPage          from "./pages/JitGrantsPage.vue";
+// Users / Audit / Plugins / JIT grants are no longer top-level routes
+// — they're admin sections inside AdminPage. Their named routes below
+// just redirect into /admin?view=<key> so existing router.push({name:…})
+// callers (UserMenu, OrchestratorChat, deep links) keep working.
 import AdminPage              from "./pages/AdminPage.vue";
 import PropertyEditor from "./components/PropertyEditor.vue";
 
@@ -62,22 +55,33 @@ const routes = [
   { path: "/flowInspector",          component: FlowInspector,  name: "flowInspector" },
   { path: "/instanceViewer/:id",     component: InstanceViewer, name: "instanceViewer" },
 
-  // Admin surfaces.
-  { path: "/users",                  component: UsersPage,         name: "users",
-    meta: { roles: ["admin"] } },
-  { path: "/audit",                  component: AuditPage,         name: "audit",
-    meta: { roles: ["admin"] } },
-  { path: "/plugins",                component: PluginsPage,       name: "plugins",
-    meta: { roles: ["admin"] } },
-  // Admin hub. Seven admin destinations (workspace settings, projects,
-  // service accounts, project plugins, custom roles, cross-project
-  // grants, quotas) all live behind /admin with a left-rail switcher.
-  // The legacy individual routes redirect into /admin?view=<key> so
-  // existing bookmarks and inbound links keep working.
+  // Admin hub. Every admin destination (workspace settings, projects,
+  // service accounts, users, plugins, project plugins, custom roles,
+  // cross-project grants, JIT grants, quotas, guardrails, compliance,
+  // SSO, audit) lives behind /admin with a left-rail switcher in
+  // AdminPage.vue. The standalone routes below redirect into
+  // /admin?view=<key> so existing bookmarks + router.push({name:…})
+  // callers (UserMenu, OrchestratorChat, deep links) keep working.
   { path: "/admin",                  component: AdminPage,         name: "admin" },
-  // Legacy aliases — preserved as redirects. Removing them outright
-  // would 404 every link in old emails / Slack threads / wiki pages.
-  { path: "/workspace",              redirect: { path: "/admin", query: { view: "workspace" } } },
+
+  // Named redirects. KEEPING the `name` so callers that navigate by
+  // name (router.push({name:"users"}), etc.) still resolve. Removing
+  // the names would break UserMenu's goUsers/goAudit/goPlugins/
+  // goJitGrants navigation.
+  { path: "/workspace",              name: "workspace",
+    redirect: { path: "/admin", query: { view: "workspace" } } },
+  { path: "/users",                  name: "users",
+    redirect: { path: "/admin", query: { view: "users" } },
+    meta: { roles: ["admin"] } },
+  { path: "/audit",                  name: "audit",
+    redirect: { path: "/admin", query: { view: "audit" } },
+    meta: { roles: ["admin"] } },
+  { path: "/plugins",                name: "plugins",
+    redirect: { path: "/admin", query: { view: "plugins" } },
+    meta: { roles: ["admin"] } },
+  { path: "/jit-grants",             name: "jitGrants",
+    redirect: { path: "/admin", query: { view: "jit-grants" } },
+    meta: { roles: ["admin"] } },
   { path: "/projects",               redirect: { path: "/admin", query: { view: "projects" } },
     meta: { roles: ["admin"] } },
   { path: "/service-accounts",       redirect: { path: "/admin", query: { view: "service-accounts" } },
@@ -90,11 +94,6 @@ const routes = [
     meta: { roles: ["admin"] } },
   { path: "/quotas",                 redirect: { path: "/admin", query: { view: "quotas" } },
     meta: { roles: ["admin", "editor"] } },
-  // JIT elevations — workspace admin only. Page gate keeps editors/
-  // viewers from rendering the table; the "mine" endpoint serves
-  // them via the user menu's "elevated access" indicator.
-  { path: "/jit-grants",             component: JitGrantsPage,        name: "jitGrants",
-    meta: { roles: ["admin"] } },
 ];
 
 export const router = createRouter({

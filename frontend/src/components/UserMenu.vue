@@ -122,21 +122,24 @@
           <q-separator />
 
           <!-- Single Admin entry — opens /admin which hosts the rail
-               for workspace settings, projects, service accounts,
-               project plugins, custom roles, cross-project grants,
-               and quotas. Visible to everyone (workspace settings is
-               always-on, the rail filters the rest by role). -->
+               for ALL admin destinations: workspace settings, users,
+               SSO, projects, service accounts, plugins, project
+               plugins, custom roles, cross-project grants, JIT
+               elevation, quotas, guardrails, compliance, audit log.
+               Visible to everyone (workspace settings is always-on,
+               the rail filters the rest by role). Previously we had
+               separate JIT / Users / Audit / Plugins entries here —
+               they've all collapsed into the rail. -->
           <q-item clickable v-close-popup @click="goAdmin">
             <q-item-section avatar><q-icon name="settings" /></q-item-section>
             <q-item-section>Admin</q-item-section>
           </q-item>
-          <q-item v-if="isWorkspaceAdmin" clickable v-close-popup @click="goJitGrants">
-            <q-item-section avatar><q-icon name="bolt" /></q-item-section>
-            <q-item-section>JIT elevations</q-item-section>
-          </q-item>
 
           <!-- My active JIT elevations — visible to every user when
-               they have at least one active grant. Tap to revoke. -->
+               they have at least one active grant. Tap to revoke.
+               Independent of the admin JIT-grants page (this lists
+               grants ON the current user; the admin page lists grants
+               the admin issued TO others). -->
           <template v-if="myJitGrants.length">
             <q-separator />
             <q-item-label header class="text-caption">You have elevated access</q-item-label>
@@ -153,18 +156,6 @@
               </q-item-section>
             </q-item>
           </template>
-          <q-item v-if="auth.user.role === 'admin'" clickable v-close-popup @click="goUsers">
-            <q-item-section avatar><q-icon name="people" /></q-item-section>
-            <q-item-section>Users</q-item-section>
-          </q-item>
-          <q-item v-if="auth.user.role === 'admin'" clickable v-close-popup @click="goAudit">
-            <q-item-section avatar><q-icon name="history" /></q-item-section>
-            <q-item-section>Audit log</q-item-section>
-          </q-item>
-          <q-item v-if="auth.user.role === 'admin'" clickable v-close-popup @click="goPlugins">
-            <q-item-section avatar><q-icon name="extension" /></q-item-section>
-            <q-item-section>Plugins</q-item-section>
-          </q-item>
 
           <q-separator />
 
@@ -333,11 +324,7 @@ async function onSwitchProject(p) {
   }
 }
 
-function goUsers()    { router.push({ name: "users" }); }
-function goAudit()    { router.push({ name: "audit" }); }
-function goPlugins()  { router.push({ name: "plugins" }); }
 function goAdmin()    { router.push({ name: "admin" }); }
-function goJitGrants(){ router.push({ name: "jitGrants" }); }
 
 async function onLogout() {
   await auth.logout();

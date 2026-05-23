@@ -112,6 +112,15 @@ import QuotasPage               from "./QuotasPage.vue";
 import SsoSettingsPage          from "./SsoSettingsPage.vue";
 import GuardrailsPage           from "./GuardrailsPage.vue";
 import ComplianceSettingsPage   from "./ComplianceSettingsPage.vue";
+// Four pages previously hung off their own top-level routes
+// (/users, /audit, /plugins, /jit-grants). They're all workspace-admin
+// governance surfaces, so they belong in the admin hub alongside the
+// others. The standalone routes are kept as named redirects (see
+// routes.js) so UserMenu's router.push({name:"users"}) etc. still works.
+import UsersPage                from "./UsersPage.vue";
+import AuditPage                from "./AuditPage.vue";
+import PluginsPage              from "./PluginsPage.vue";
+import JitGrantsPage            from "./JitGrantsPage.vue";
 // Knowledge bases + Prompt templates + Evals + Model routes are
 // content-authoring surfaces (sibling to Agents + Configs), not
 // workspace governance — they live on the Home page rail instead
@@ -133,15 +142,26 @@ function isEditor()  { return ["admin", "editor"].includes(auth.user?.role); }
 // shows in the rail + the toolbar suffix.
 const sections = [
   { key: "workspace",           label: "Workspace",            icon: "settings",                 component: WorkspaceSettings,      predicate: () => true       },
+  // People — workspace user roster (role / status / password reset).
+  { key: "users",               label: "Users",                icon: "people",                   component: UsersPage,              predicate: isWsAdmin        },
   { key: "sso",                 label: "SSO (SAML)",           icon: "business",                 component: SsoSettingsPage,        predicate: isWsAdmin        },
   { key: "projects",            label: "Projects",             icon: "folder_special",           component: ProjectsPage,           predicate: isWsAdmin        },
   { key: "service-accounts",    label: "Service accounts",     icon: "vpn_key",                  component: ServiceAccountsPage,    predicate: isEditor         },
+  // Workspace-level plugin install (catalog → installed). Project
+  // plugins (per-project enablement) is a downstream view of this.
+  { key: "plugins",             label: "Plugins",              icon: "widgets",                  component: PluginsPage,            predicate: isWsAdmin        },
   { key: "project-plugins",     label: "Project plugins",      icon: "extension",                component: ProjectPluginsPage,     predicate: isEditor         },
   { key: "custom-roles",        label: "Custom roles",         icon: "admin_panel_settings",     component: CustomRolesPage,        predicate: isWsAdmin        },
   { key: "cross-project-grants", label: "Cross-project grants", icon: "swap_horiz",              component: CrossProjectGrantsPage, predicate: isWsAdmin        },
+  // Time-bounded role elevations — sits next to the other permission
+  // surfaces (custom roles, cross-project grants).
+  { key: "jit-grants",          label: "JIT elevation",        icon: "schedule",                 component: JitGrantsPage,          predicate: isWsAdmin        },
   { key: "quotas",              label: "Quotas",               icon: "data_usage",               component: QuotasPage,             predicate: isEditor         },
   { key: "guardrails",          label: "Guardrails",           icon: "shield",                   component: GuardrailsPage,         predicate: isEditor         },
   { key: "compliance",          label: "Compliance",           icon: "gavel",                    component: ComplianceSettingsPage, predicate: isWsAdmin        },
+  // Observability — last because it's a read-only browse surface, not
+  // a configuration surface like the rest of the rail.
+  { key: "audit",               label: "Audit log",            icon: "history",                  component: AuditPage,              predicate: isWsAdmin        },
 ];
 
 const visibleSections = computed(() => sections.filter(s => s.predicate()));
