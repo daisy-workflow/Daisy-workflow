@@ -128,7 +128,8 @@
           <q-card v-if="typeDef && !typeDef.freeform" flat bordered>
             <q-card-section class="q-pa-sm">
               <div class="text-caption text-grey q-mb-sm">{{ typeDef.label }}</div>
-              <div v-for="f in typeDef.fields" :key="f.name" class="q-mb-xs">
+              <template v-for="f in typeDef.fields" :key="f.name">
+              <div v-if="fieldVisible(f)" class="q-mb-xs">
                 <!-- secret string — never echoes the existing value back.
                      The API masks secrets as "***" in GET responses; we
                      also strip those on load so the field is empty by
@@ -208,6 +209,7 @@
                   :hint="f.description"
                 />
               </div>
+              </template>
             </q-card-section>
           </q-card>
 
@@ -389,12 +391,18 @@ watch(() => form.value.type, (newType, oldType) => {
   }
   const def = types.value.find(t => t.type === newType);
   if (def && Array.isArray(def.fields)) {
+    // Seed defaults in registry order so a later field's showIf can
+    // be evaluated against earlier fields already seeded. e.g. the
+    // `provider` select (default "anthropic") gets seeded BEFORE
+    // mockRules (showIf provider="mock"), so mockRules is correctly
+    // skipped at type-switch time and only picked up later by
+    // reseedConditionalDefaults when the user flips provider to mock.
     const seeded = {};
     for (const f of def.fields) {
       if (f.secret) continue;
-      if (f.default !== undefined && f.default !== null && f.default !== "") {
-        seeded[f.name] = f.default;
-      }
+      if (f.default == null || f.default === "") continue;
+      if (!fieldVisibleAgainst(f, seeded)) continue;
+      seeded[f.name] = f.default;
     }
     if (Object.keys(seeded).length) form.value.data = seeded;
   }
@@ -429,6 +437,63 @@ function setField(k, v) {
     form.value.data = { ...form.value.data, [k]: v };
   }
 }
+
+/**
+ * Visibility rule for a field. A field is shown unless it declares a
+ * `showIf` object on the registry — in which case every key/value pair
+ * in showIf must match the current form.data. Values can be a literal
+ * or an array of literals (any-match). Used to hide provider-specific
+ * fields (Bedrock, Azure OpenAI, mock) unless the corresponding
+ * provider is picked.
+ *
+ * `against` lets the same logic be reused at seeding time when we're
+ * building up the data object incrementally and form.value.data hasn't
+ * been written yet.
+ */
+function fieldVisibleAgainst(f, data) {
+  if (!f || !f.showIf || typeof f.showIf !== "object") return true;
+  for (const [k, v] of Object.entries(f.showIf)) {
+    const cur = data?.[k];
+    if (Array.isArray(v)) {
+      if (!v.includes(cur)) return false;
+    } else if (cur !== v) {
+      return false;
+    }
+  }
+  return true;
+}
+function fieldVisible(f) {
+  return fieldVisibleAgainst(f, form.value?.data || {});
+}
+
+/**
+ * Re-seed defaults for any field that just became visible. Called on
+ * every form.data change — cheap (a loop over fields), and a field
+ * that already has a value is left alone. Net effect: switching the
+ * provider select to "mock" makes mockRules show up pre-populated
+ * with the example default, just like switching the config TYPE to
+ * ai.provider seeds the always-visible defaults.
+ */
+function reseedConditionalDefaults() {
+  if (!isNew.value) return;                       // edit mode: never auto-mutate
+  const def = typeDef.value;
+  if (!def || !Array.isArray(def.fields)) return;
+  let changed = false;
+  const next = { ...(form.value.data || {}) };
+  for (const f of def.fields) {
+    if (f.secret) continue;
+    if (f.default == null || f.default === "") continue;
+    if (!fieldVisible(f)) continue;               // not visible yet
+    const cur = next[f.name];
+    if (cur === undefined || cur === null || cur === "") {
+      next[f.name] = f.default;
+      changed = true;
+    }
+  }
+  if (changed) form.value.data = next;
+}
+
+watch(() => form.value.data, () => { reseedConditionalDefaults(); }, { deep: true });
 
 // ── Generic rows ───────────────────────────────────────────────────────────
 function rebuildGenericRows() {

@@ -123,33 +123,42 @@ export const TYPES = Object.freeze({
       // gate per-provider in the UI — the unused fields stay blank
       // and the provider modules ignore them. Avoids a complex
       // conditional schema.
+      // `showIf` gates UI visibility — the frontend ConfigDesigner
+      // only renders a field when every key/value pair under showIf
+      // matches the current form data. Backend validation still allows
+      // the field on the row (you can save data for a hidden field via
+      // the API), but humans editing through the UI won't be presented
+      // with Bedrock fields when they picked OpenAI, etc.
       { name: "azureDeployment", type: "string",
+        showIf: { provider: "azure-openai" },
         description: "Azure OpenAI only. The deployment name from your Azure portal (NOT the model name)." },
       { name: "azureApiVersion", type: "string",
+        showIf: { provider: "azure-openai" },
         description: "Azure OpenAI only. e.g. 2024-08-01-preview. Defaults to a known-good version." },
       { name: "awsRegion", type: "string",
+        showIf: { provider: "bedrock" },
         description: "Bedrock only. e.g. us-east-1. AWS credential chain (env, IAM role) supplies the keys." },
       { name: "awsAccessKeyId",     type: "string", secret: true,
+        showIf: { provider: "bedrock" },
         description: "Bedrock only. Optional — leave blank to use the standard AWS credential chain." },
       { name: "awsSecretAccessKey", type: "string", secret: true,
+        showIf: { provider: "bedrock" },
         description: "Bedrock only. Optional — leave blank to use the standard AWS credential chain." },
       // ── Mock provider only ────────────────────────────────────────────
-      // Two fields, both meaningful only when provider="mock". Kept on
-      // the always-present schema (rather than gated via conditional
-      // UI) for consistency with how azure / bedrock specifics are
-      // already handled — unused fields are quietly ignored at runtime.
-      //
-      // The defaults render as a working example covering every field
-      // of the rule schema in one place: substring + regex match,
-      // delayMs (simulated latency), responseJson (JSON-mode prompts),
-      // explicit token counts (cost rollup), empty-match catch-all.
+      // Only rendered when provider="mock". The default rule set is a
+      // working example covering every field of the rule schema in one
+      // place: substring + regex match, delayMs (simulated latency),
+      // responseJson (JSON-mode prompts), explicit token counts (cost
+      // rollup), empty-match catch-all. ConfigDesigner seeds these
+      // defaults the moment the user switches provider to mock.
       { name: "mockRules", type: "string", multiline: true,
+        showIf: { provider: "mock" },
         description:
-          "Mock provider only. JSON array of rules; first match wins. " +
+          "JSON array of rules; first match wins. " +
           "Each rule: { match: \"substring\" | \"/regex/flags\" | \"\" (catch-all), " +
           "response: \"text\" OR responseJson: {…}, " +
           "delayMs?: number, inputTokens?: number, outputTokens?: number }. " +
-          "The default shown is a working example demonstrating every field once.",
+          "The default is a working example demonstrating every field once.",
         default: [
           "[",
           "  { \"match\": \"hello\",      \"response\": \"Hi there!\" },",
@@ -161,10 +170,10 @@ export const TYPES = Object.freeze({
         ].join("\n"),
       },
       { name: "mockDefaultResponse", type: "string", multiline: true,
+        showIf: { provider: "mock" },
         description:
-          "Mock provider only. Response returned when none of the rules in " +
-          "mockRules matched AND no catch-all rule (match=\"\") is present. " +
-          "Multi-line allowed.",
+          "Response returned when none of the rules in mockRules matched " +
+          "AND no catch-all rule (match=\"\") is present. Multi-line allowed.",
         default: "[mock] no rule matched",
       },
     ],
