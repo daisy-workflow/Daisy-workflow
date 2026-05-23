@@ -18,6 +18,7 @@ import * as azureOpenai from "./azure-openai.js";
 import * as gemini      from "./gemini.js";
 import * as bedrock     from "./bedrock.js";
 import * as ollama      from "./ollama.js";
+import * as mock        from "./mock.js";
 
 const PROVIDERS = {
   "openai":       openai,
@@ -26,6 +27,9 @@ const PROVIDERS = {
   "gemini":       gemini,
   "bedrock":      bedrock,
   "ollama":       ollama,
+  // In-tree mock for offline development + tests. Returns deterministic
+  // responses based on the `mockRules` field on the ai.provider config.
+  "mock":         mock,
 };
 
 /** Look up the provider module; throw with a friendly list if unknown. */

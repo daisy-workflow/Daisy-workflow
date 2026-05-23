@@ -69,7 +69,7 @@
           <q-spinner-dots color="primary" size="32px" />
         </div>
 
-        <div v-else class="q-pa-md column q-gutter-md" style="max-width: 720px;">
+        <div v-else class="q-pa-md column q-gutter-md" >
           <div class="row q-col-gutter-md">
             <div class="col-7">
               <q-input class="q-pl-md"
@@ -180,6 +180,21 @@
                   :model-value="form.data[f.name]"
                   @update:model-value="setField(f.name, $event === '' ? undefined : Number($event))"
                   type="number" dense outlined
+                  :label="`${f.name}${f.required ? ' *' : ''}`"
+                  :hint="f.description"
+                />
+                <!-- multiline string (textarea) — used by JSON-shaped
+                     fields like ai.provider.mockRules. Picked via the
+                     `multiline: true` flag on the registry's field
+                     definition so any future field that needs a big
+                     box can opt in the same way. -->
+                <q-input
+                  v-else-if="f.multiline"
+                  :model-value="form.data[f.name]"
+                  @update:model-value="setField(f.name, $event)"
+                  type="textarea" autogrow
+                  dense outlined
+                  input-style="font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; min-height: 120px;"
                   :label="`${f.name}${f.required ? ' *' : ''}`"
                   :hint="f.description"
                 />
@@ -361,11 +376,27 @@ onMounted(async () => {
 // Reset data when the user picks a different type during create. Doing this
 // inside a watcher keeps the form predictable — switching to "database"
 // shouldn't keep stale "url" keys from a generic config.
+//
+// We ALSO seed any per-field defaults declared in the registry — this is
+// what makes the mock provider's `mockRules` textarea arrive pre-populated
+// with a working example the user can edit. Secret fields are deliberately
+// NOT seeded (no point pre-filling a placeholder password).
 watch(() => form.value.type, (newType, oldType) => {
   if (!isNew.value || newType === oldType) return;
   form.value.data = {};
   if (newType === "generic") {
     genericRows.value = [];
+  }
+  const def = types.value.find(t => t.type === newType);
+  if (def && Array.isArray(def.fields)) {
+    const seeded = {};
+    for (const f of def.fields) {
+      if (f.secret) continue;
+      if (f.default !== undefined && f.default !== null && f.default !== "") {
+        seeded[f.name] = f.default;
+      }
+    }
+    if (Object.keys(seeded).length) form.value.data = seeded;
   }
   // Each type has its own set of secret fields; reset visibility.
   for (const k of Object.keys(passwordVisible)) delete passwordVisible[k];

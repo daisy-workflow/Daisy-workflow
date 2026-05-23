@@ -107,6 +107,9 @@ export const TYPES = Object.freeze({
           // config type means a user wiring up RAG uses the same
           // form they already know.
           "voyage",
+          // In-tree mock for offline dev + demos. No outbound HTTP;
+          // responses come from the `mockRules` field below.
+          "mock",
         ],
         default: "anthropic",
         description: "Provider family. Drives the request shape, endpoint, and credential format." },
@@ -130,6 +133,40 @@ export const TYPES = Object.freeze({
         description: "Bedrock only. Optional — leave blank to use the standard AWS credential chain." },
       { name: "awsSecretAccessKey", type: "string", secret: true,
         description: "Bedrock only. Optional — leave blank to use the standard AWS credential chain." },
+      // ── Mock provider only ────────────────────────────────────────────
+      // Two fields, both meaningful only when provider="mock". Kept on
+      // the always-present schema (rather than gated via conditional
+      // UI) for consistency with how azure / bedrock specifics are
+      // already handled — unused fields are quietly ignored at runtime.
+      //
+      // The defaults render as a working example covering every field
+      // of the rule schema in one place: substring + regex match,
+      // delayMs (simulated latency), responseJson (JSON-mode prompts),
+      // explicit token counts (cost rollup), empty-match catch-all.
+      { name: "mockRules", type: "string", multiline: true,
+        description:
+          "Mock provider only. JSON array of rules; first match wins. " +
+          "Each rule: { match: \"substring\" | \"/regex/flags\" | \"\" (catch-all), " +
+          "response: \"text\" OR responseJson: {…}, " +
+          "delayMs?: number, inputTokens?: number, outputTokens?: number }. " +
+          "The default shown is a working example demonstrating every field once.",
+        default: [
+          "[",
+          "  { \"match\": \"hello\",      \"response\": \"Hi there!\" },",
+          "  { \"match\": \"/weather/i\", \"response\": \"It is sunny and 72°F.\", \"delayMs\": 50 },",
+          "  { \"match\": \"json\",       \"responseJson\": { \"ok\": true, \"result\": 42 } },",
+          "  { \"match\": \"expensive\",  \"response\": \"A long answer here.\", \"inputTokens\": 200, \"outputTokens\": 800 },",
+          "  { \"match\": \"\",           \"response\": \"[mock] no specific rule matched\" }",
+          "]",
+        ].join("\n"),
+      },
+      { name: "mockDefaultResponse", type: "string", multiline: true,
+        description:
+          "Mock provider only. Response returned when none of the rules in " +
+          "mockRules matched AND no catch-all rule (match=\"\") is present. " +
+          "Multi-line allowed.",
+        default: "[mock] no rule matched",
+      },
     ],
   },
   webhook: {
