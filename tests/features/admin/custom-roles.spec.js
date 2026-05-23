@@ -21,8 +21,10 @@ test("custom role catalog — has known permission groups", async () => {
   // Verify a couple of well-known permission strings exist somewhere
   // in the catalog. These are quoted from the backend permissions
   // table — if any disappears, the UI's picker silently breaks.
+  // Note: the engine names them workflow.*, not graph.* (that was
+  // the early-days internal name).
   const flat = JSON.stringify(groups);
-  for (const perm of ["graph.create", "agent.create", "guardrails.write"]) {
+  for (const perm of ["workflow.create", "agent.create", "config.read"]) {
     expect(flat).toContain(perm);
   }
 });
@@ -33,7 +35,7 @@ test("custom role CRUD — create + list + delete", async () => {
 
   const created = await createCustomRole({
     token, name, description: "wave3 smoke role",
-    permissions: ["graph.read", "agent.read"],
+    permissions: ["workflow.read", "agent.read"],
   });
   expect(created.id).toBeTruthy();
 

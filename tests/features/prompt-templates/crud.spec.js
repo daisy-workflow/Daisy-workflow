@@ -20,12 +20,15 @@ test("prompt template CRUD — create then delete", async () => {
       { name: "topic",   description: "What to answer about" },
     ],
   });
+  // POST /prompt-templates returns { id } only; verify the title
+  // through the list endpoint where the row is fully projected.
   expect(created.id).toBeTruthy();
-  expect(created.title).toBe(title);
 
   // List endpoint returns the row.
   const list = await listPromptTemplates({ token });
-  expect(list.some(t => t.id === created.id)).toBe(true);
+  const row = list.find(t => t.id === created.id);
+  expect(row).toBeTruthy();
+  expect(row.title).toBe(title);
 
   // Delete + verify removal.
   await deletePromptTemplate({ token, id: created.id });

@@ -10,22 +10,14 @@ test("logout drops the session and lands on /login", async ({ page, context }) =
   // Sign in first.
   await new LoginPage(page).loginAs(TEST_ADMIN.email, TEST_ADMIN.password);
 
-  // The user avatar / account menu lives in the toolbar. Quasar
-  // typically renders it as a circular q-btn at the right edge.
-  // We try a sequence of likely selectors; the test logs which one
-  // actually matched so we can pin it down in Layer 2 cleanup.
-  const logoutButton = page
-    .getByRole("menuitem", { name: /log\s*out|sign\s*out/i })
-    .or(page.getByRole("button", { name: /log\s*out|sign\s*out/i }))
-    .first();
-
-  // Open the account menu — most UIs hide logout behind a click
-  // on the avatar / "account" button first.
-  const accountBtn = page.getByRole("button", { name: /account|profile|user|admin@test\.local/i }).first();
-  if (await accountBtn.isVisible().catch(() => false)) {
-    await accountBtn.click();
-  }
-  await logoutButton.click();
+  // UserMenu.vue: avatar `<q-btn class="user-btn">` opens a
+  // `<q-menu>` containing `<q-item clickable @click="onLogout">
+  // <q-item-section>Sign out</q-item-section></q-item>`. So we
+  // click the avatar to reveal the popover, then click the
+  // "Sign out" item. Using class+text selectors because Quasar's
+  // q-item doesn't auto-set a "menuitem" ARIA role.
+  await page.locator(".user-btn").first().click();
+  await page.getByText("Sign out", { exact: true }).click();
 
   // After logout, the SPA pushes the user to /login.
   await expect(page).toHaveURL(/\/login(\?.*)?$/);

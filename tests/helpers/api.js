@@ -212,11 +212,18 @@ export async function createConfig({ token, name, type, data, sharedAtWorkspace 
   });
 }
 
-export async function createAgent({ token, title, configName, prompt }) {
-  return call({
-    token, method: "POST", path: "/agents",
-    body: { title, config_name: configName, prompt },
-  });
+export async function createAgent({ token, title, configName, prompt, promptTemplateId, sharedAtWorkspace }) {
+  // `prompt` is allowed to be empty when a promptTemplateId is set —
+  // the server renders the body from prompt_templates at call time.
+  // Matches the backend's validatePayload rule.
+  const body = { title, config_name: configName, prompt: prompt || "" };
+  if (promptTemplateId)        body.prompt_template_id  = promptTemplateId;
+  if (sharedAtWorkspace != null) body.sharedAtWorkspace = sharedAtWorkspace;
+  return call({ token, method: "POST", path: "/agents", body });
+}
+
+export async function getAgent({ token, id }) {
+  return call({ token, method: "GET", path: `/agents/${id}` });
 }
 
 // ── Plugin catalog ───────────────────────────────────────────────
@@ -278,14 +285,35 @@ export async function deletePromptTemplate({ token, id }) {
 }
 
 export async function previewPromptTemplate({ token, body, vars }) {
-  return call({ token, method: "POST", path: "/prompt-templates/preview",
-    body: { body, vars: vars || {} } });
+  // The preview endpoint is per-template (`POST /prompt-templates/:id/preview`)
+  // — it loads the stored row and renders against `vars`. There's no
+  // "stateless preview" endpoint, so to test a body the helper creates
+  // an ephemeral template, previews it, deletes it. Net: caller
+  // experience matches what they'd expect — pass body + vars, get
+  // { rendered, missing }.
+  const created = await createPromptTemplate({
+    token,
+    title: uniq("preview"),
+    body,
+    sharedAtWorkspace: false,
+  });
+  try {
+    return await call({ token, method: "POST",
+      path: `/prompt-templates/${created.id}/preview`,
+      body: { vars: vars || {} } });
+  } finally {
+    await deletePromptTemplate({ token, id: created.id }).catch(() => {});
+  }
 }
 
 // ── Projects (workspace admin) ──────────────────────────────────
 
 export async function listProjects({ token }) {
-  return call({ token, method: "GET", path: "/projects" });
+  // GET /projects returns { active, projects:[], isWorkspaceAdmin } —
+  // unwrap so callers can do `.some()` / `.find()` directly on an
+  // array as they'd intuitively expect.
+  const body = await call({ token, method: "GET", path: "/projects" });
+  return Array.isArray(body) ? body : (body?.projects || []);
 }
 
 export async function createProject({ token, name, slug, description }) {
@@ -307,28 +335,34 @@ export function uniq(prefix) {
 
 // ── Knowledge bases ─────────────────────────────────────────────
 
-export async function createKb({ token, title, embeddingProvider = "openai", embeddingModel = "text-embedding-3-small", chunkSize = 800, chunkOverlap = 100 }) {
-  return call({ token, method: "POST", path: "/knowledge-bases",
-    body: { title, embeddingProvider, embeddingModel, chunkSize, chunkOverlap, kbBackend: "pgvector" } });
+export async function createKb({ token, title, embeddingProvider = "openai", embeddingModel = "text-embedding-3-small", chunkSize = 800, chunkOverlap = 100, kbBackend = "pgvector", kbBackendConfigId, kbBackendCollection }) {
+  const body = { title, embeddingProvider, embeddingModel, chunkSize, chunkOverlap, kbBackend };
+  if (kbBackendConfigId)   body.kbBackendConfigId   = kbBackendConfigId;
+  if (kbBackendCollection) body.kbBackendCollection = kbBackendCollection;
+  return call({ token, method: "POST", path: "/kbs", body });
+}
+
+export async function getKb({ token, id }) {
+  return call({ token, method: "GET", path: `/kbs/${id}` });
 }
 
 export async function listKbs({ token }) {
-  return call({ token, method: "GET", path: "/knowledge-bases" });
+  return call({ token, method: "GET", path: "/kbs" });
 }
 
 export async function deleteKb({ token, id }) {
-  return call({ token, method: "DELETE", path: `/knowledge-bases/${id}` });
+  return call({ token, method: "DELETE", path: `/kbs/${id}` });
 }
 
 /** Ingest a text document directly (no file upload). The KB API
- *  exposes /knowledge-bases/:id/documents (POST text payload). */
+ *  exposes /kbs/:id/documents (POST text payload). */
 export async function ingestKbText({ token, kbId, title, text }) {
-  return call({ token, method: "POST", path: `/knowledge-bases/${kbId}/documents`,
+  return call({ token, method: "POST", path: `/kbs/${kbId}/documents`,
     body: { title, text, sourceType: "inline" } });
 }
 
 export async function queryKb({ token, kbId, query, topK = 5 }) {
-  return call({ token, method: "POST", path: `/knowledge-bases/${kbId}/query`,
+  return call({ token, method: "POST", path: `/kbs/${kbId}/query`,
     body: { query, topK } });
 }
 
@@ -388,12 +422,16 @@ export async function deleteModelRoute({ token, id }) {
 
 // ── Audit + workflow metrics ────────────────────────────────────
 
-export async function listAudit({ token, action, from, to, limit = 50 }) {
+export async function listAudit({ token, action, actor, resourceType, resourceId, outcome, from, to, limit = 50 }) {
   const q = new URLSearchParams();
-  if (action) q.set("action", action);
-  if (from)   q.set("from",   from);
-  if (to)     q.set("to",     to);
-  if (limit)  q.set("limit",  String(limit));
+  if (action)       q.set("action",       action);
+  if (actor)        q.set("actor",        actor);
+  if (resourceType) q.set("resourceType", resourceType);
+  if (resourceId)   q.set("resourceId",   resourceId);
+  if (outcome)      q.set("outcome",      outcome);
+  if (from)         q.set("from",         from);
+  if (to)           q.set("to",           to);
+  if (limit)        q.set("limit",        String(limit));
   return call({ token, method: "GET", path: `/audit?${q}` });
 }
 
@@ -507,15 +545,15 @@ export async function deleteQuota({ token, kind }) {
 // ── SAML config ─────────────────────────────────────────────────
 
 export async function getSamlConfig({ token }) {
-  return call({ token, method: "GET", path: "/saml-configs" });
+  return call({ token, method: "GET", path: "/saml-config" });
 }
 
 export async function setSamlConfig({ token, ...body }) {
-  return call({ token, method: "PUT", path: "/saml-configs", body });
+  return call({ token, method: "PUT", path: "/saml-config", body });
 }
 
 export async function deleteSamlConfig({ token }) {
-  return call({ token, method: "DELETE", path: "/saml-configs" });
+  return call({ token, method: "DELETE", path: "/saml-config" });
 }
 
 // ── Compliance + residency ──────────────────────────────────────

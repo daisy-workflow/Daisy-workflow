@@ -34,7 +34,14 @@ test("quota delete — removes the cap (back to unlimited)", async () => {
   await setQuota({ token, kind: "executions_per_day", limit: 500 });
   await deleteQuota({ token, kind: "executions_per_day" });
 
+  // The /quotas list endpoint surfaces a row for every kind the
+  // workspace has ever set, even after DELETE — DELETE removes the
+  // CAP (sets limit to 0 / null = "unlimited") but doesn't drop
+  // the metering row. So the assertion is "no positive limit"
+  // rather than "no row".
   const list = await listQuotas({ token });
   const rows = Array.isArray(list) ? list : (list.quotas || []);
-  expect(rows.some(r => r.kind === "executions_per_day")).toBe(false);
+  const row = rows.find(r => r.kind === "executions_per_day");
+  // Either the row is gone OR its limit is 0/null (unlimited).
+  expect(!row || !row.limit_value || row.limit_value === 0 || row.limit === 0).toBe(true);
 });

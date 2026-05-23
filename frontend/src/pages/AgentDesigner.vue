@@ -42,10 +42,11 @@
           unelevated
           color="primary"
           icon="save"
-          class="btn-icon-primary"
+          class="btn-icon-primary save-button"
           :loading="saving"
           :disable="!canSave"
           @click="onSave"
+      
         >
           <q-tooltip>Save</q-tooltip>
         </q-btn>
@@ -122,6 +123,7 @@
 
           <!-- Prompt — markdown editor with edit / split / preview tabs -->
           <MarkdownEditor
+            class="markdown-editor"
             v-model="form.prompt"
             :label="form.prompt_template_id ? 'Fallback prompt (template overrides this when set)' : 'System prompt'"
             :required="!form.prompt_template_id"

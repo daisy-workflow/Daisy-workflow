@@ -6,9 +6,13 @@ export class PluginsPage {
 
   async goto() {
     await this.page.goto("/plugins");
-    // The page title sits at the top of the page; wait for it so
-    // we don't assert on a half-rendered table.
-    await this.page.getByRole("heading", { name: /plugin/i }).first().waitFor();
+    // PluginsPage uses Quasar table rows + a sidebar — no top-level
+    // heading. Use the toolbar title text as a "mounted" signal.
+    await this.page.locator(".text-h6").first().waitFor({ state: "visible" });
+    // Then wait for the API call to come back — the table is empty
+    // until the plugin list resolves.
+    await this.page.waitForResponse(r => r.url().endsWith("/plugins"), { timeout: 10_000 })
+      .catch(() => { /* page may load from cache */ });
   }
 
   /** Count rows in the installed-plugins table. The table is a

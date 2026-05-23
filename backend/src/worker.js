@@ -105,6 +105,25 @@ async function processExecution(job) {
         span.setStatus({ code: SpanStatusCode.OK });
         return result;
       } catch (e) {
+        // OUTER rescue — covers everything inside processExecutionBody,
+        // including the pool queries / parseDag / SELECT for ctx that
+        // run BEFORE the inner try/catch around executeDag. Without
+        // this, any throw between status='running' and the inner
+        // catch left the row pinned at 'running' forever (BullMQ
+        // marks the job failed but doesn't touch the executions row).
+        // The HITL spec hit this when parseDag or loadConfigsMap
+        // raised — status='running' was visible to the poll but
+        // never advanced.
+        log.warn("processExecutionBody threw — marking execution failed",
+          { executionId: job?.data?.executionId, error: e?.message });
+        if (job?.data?.executionId) {
+          try {
+            await pool.query(
+              "UPDATE executions SET status='failed', finished_at=NOW(), error=$2 WHERE id=$1 AND status NOT IN ('success','partial','waiting','failed')",
+              [job.data.executionId, e?.message || String(e)],
+            );
+          } catch {/* best effort — already in a failure path */}
+        }
         span.recordException(e);
         span.setStatus({ code: SpanStatusCode.ERROR, message: e?.message || String(e) });
         throw e;
@@ -258,6 +277,27 @@ async function processExecutionBody(job, span) {
   const workflowTimeoutMs = resolveWorkflowTimeoutMs(parsed);
   span?.setAttribute("workflow.timeout_ms", workflowTimeoutMs || 0);
 
+  // Wrap upsertNodeState so the worker can track every fire-and-forget
+  // persistNodeState promise the executor kicks off. The executor calls
+  // its persistNodeState hook with Promise.resolve(fn).catch(()=>{}) —
+  // it never awaits them. Under load, the final UPDATE below was
+  // queueing behind both (a) the pool exhausted by in-flight INSERTs
+  // and (b) the FK row lock the INSERT INTO node_states takes on the
+  // executions row (FOR KEY SHARE; the UPDATE needs FOR NO KEY UPDATE,
+  // they conflict). Draining these before the UPDATE releases the
+  // locks + frees connections, so the UPDATE proceeds immediately.
+  //
+  // The HITL spec hit this hard: status='waiting' would land in the
+  // executor + node_states would persist, but the executions row
+  // never advanced past 'running' because the UPDATE was waiting on
+  // locks the not-yet-completed INSERTs still held.
+  const pendingPersists = [];
+  const wrappedUpsert = (...args) => {
+    const p = upsertNodeState(...args);
+    pendingPersists.push(p);
+    return p;
+  };
+
   let result;
   try {
     const exec = isBatch
@@ -267,12 +307,12 @@ async function processExecutionBody(job, span) {
           // the batch DAG, just not per-item.
           executionId, emitter, items: batchItems,
           concurrency: 4,
-          persistNodeState: upsertNodeState,
+          persistNodeState: wrappedUpsert,
         })
       : executeDag(parsed, {
           executionId, emitter, initialData,
           // Step-1 of the durable-execution design: write state per node.
-          persistNodeState:  upsertNodeState,
+          persistNodeState:  wrappedUpsert,
           // Resume hooks — both no-ops on a fresh run.
           initialNodeStates,
           inputsOverride,
@@ -282,11 +322,26 @@ async function processExecutionBody(job, span) {
       workflowTimeoutMs,
       () => new WorkflowTimeoutError(workflowTimeoutMs),
     );
+    // Drain every in-flight node_states write. allSettled so a single
+    // upsert failure can't keep the executions row pinned at 'running'.
+    await Promise.allSettled(pendingPersists);
+    // Trace-point — proves the executor returned. If this log appears
+    // but the subsequent UPDATE doesn't land, the hang is between here
+    // and the pool.query below (JSON.stringify on ctx, or pool blocked).
+    // Logged at warn so it survives LOG_LEVEL=warn deploys — diagnostic
+    // value here outweighs the "is this really a warning" semantic.
+    log.warn("executeDag returned", { executionId, status: result?.status, persists: pendingPersists.length });
   } catch (e) {
+    // Same rescue path as the surrounding processExecution wrapper —
+    // if executeDag throws (timeout, engine bug, validateOutput
+    // failure, plugin throw), land the row at 'failed' before
+    // rethrowing so the e2e suite isn't waiting on a stuck 'running'.
+    log.warn("executeDag threw — marking execution failed",
+      { executionId, error: e.message });
     await pool.query(
       "UPDATE executions SET status='failed', finished_at=NOW(), error=$2 WHERE id=$1",
       [executionId, e.message],
-    );
+    ).catch(() => {});
     throw e;
   }
 
@@ -311,27 +366,66 @@ async function processExecutionBody(job, span) {
   }
 
   // For batch runs, persist the per-item summary instead of a single ctx.
-  const finalContext = isBatch
-    ? { batch: true, items: (result.items || []).map(it => ({
-        ...it,
-        ctx:    redact(it.ctx),
-        // Some batch implementations bubble up the per-item input under
-        // `input` — that's user-supplied data, leave it alone.
-      })) }
-    : redact(result.ctx);
+  let finalContext;
+  try {
+    finalContext = isBatch
+      ? { batch: true, items: (result.items || []).map(it => ({
+          ...it,
+          ctx:    redact(it.ctx),
+          // Some batch implementations bubble up the per-item input under
+          // `input` — that's user-supplied data, leave it alone.
+        })) }
+      : redact(result.ctx);
 
-  // Stamp the workflow.run span's trace_id onto the persisted context
-  // so the Grafana overview dashboard can deep-link from "executions
-  // table row" → "trace in Tempo". Cheap (one struct lookup); the
-  // worker already has the active span from startActiveSpan above.
-  const otelCtx = trace.getActiveSpan()?.spanContext?.();
-  if (otelCtx?.traceId) {
-    finalContext._otel = { trace_id: otelCtx.traceId, span_id: otelCtx.spanId };
+    // Stamp the workflow.run span's trace_id onto the persisted context
+    // so the Grafana overview dashboard can deep-link from "executions
+    // table row" → "trace in Tempo". Cheap (one struct lookup); the
+    // worker already has the active span from startActiveSpan above.
+    const otelCtx = trace.getActiveSpan()?.spanContext?.();
+    if (otelCtx?.traceId) {
+      finalContext._otel = { trace_id: otelCtx.traceId, span_id: otelCtx.spanId };
+    }
+  } catch (e) {
+    // Building finalContext failed (circular ref, non-serialisable
+    // value, etc.). Persist a minimal context so the row at least
+    // gets its final status — without this rescue, the execution
+    // would stay stuck at 'running' forever (no further code path
+    // updates it once the inner executeDag try/catch is exited).
+    log.warn("finalContext build failed; persisting minimal context",
+      { executionId, error: e.message });
+    finalContext = { __finalContextBuildError: e.message };
   }
-  await pool.query(
-    "UPDATE executions SET status=$2, finished_at=NOW(), context=$3 WHERE id=$1",
-    [executionId, result.status, JSON.stringify(finalContext)],
-  );
+  // Pre-stringify the context OUTSIDE the pool.query call. If
+  // JSON.stringify throws on a hidden circular reference, the
+  // pool.query never gets called — without this catch the row stayed
+  // pinned at 'running' because the inner try/catch only runs once
+  // pool.query is INVOKED. Stringifying ahead of time guarantees we
+  // either get a string (UPDATE proceeds) or land in the catch
+  // (UPDATE with '{}' proceeds). Either way the row's status flips.
+  let contextJson;
+  try {
+    contextJson = JSON.stringify(finalContext);
+  } catch (e) {
+    log.warn("execution context JSON.stringify failed at pre-stringify; storing empty",
+      { executionId, error: e.message });
+    contextJson = "{}";
+  }
+  try {
+    await pool.query(
+      "UPDATE executions SET status=$2, finished_at=NOW(), context=$3::jsonb WHERE id=$1",
+      [executionId, result.status, contextJson],
+    );
+    // warn so it shows under LOG_LEVEL=warn — pairs with the
+    // "executeDag returned" log above to bracket the hang window.
+    log.warn("execution row updated", { executionId, status: result.status });
+  } catch (e) {
+    log.warn("execution UPDATE failed; retrying with empty context",
+      { executionId, error: e.message });
+    await pool.query(
+      "UPDATE executions SET status=$2, finished_at=NOW(), context='{}'::jsonb WHERE id=$1",
+      [executionId, result.status],
+    );
+  }
   log.info("execution end", { executionId, status: result.status });
   span?.setAttribute("workflow.status", result.status);
   return { status: result.status };

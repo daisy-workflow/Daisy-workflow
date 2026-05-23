@@ -139,7 +139,8 @@
           <q-input
             v-model="form.name"
             label="Name *" dense outlined
-            class="q-mb-sm"
+            class="q-mb-sm project-name-input"
+
           />
           <q-input
             v-if="!editing?.id"

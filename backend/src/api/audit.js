@@ -65,8 +65,13 @@ router.get("/", async (req, res, next) => {
     const limit = Math.max(1, Math.min(parseInt(req.query.limit, 10) || 100, 500));
     params.push(limit);
 
+    // actor_kind + project_id are projected so workflow-emitted rows
+    // (actor_kind = 'workflow', written by the audit.record plugin) are
+    // distinguishable from human + service-account ones. Without the
+    // column on the response the admin UI couldn't render that filter,
+    // and the e2e suite couldn't assert on the kind.
     const { rows } = await pool.query(
-      `SELECT id, workspace_id, actor_id, actor_email, actor_role,
+      `SELECT id, workspace_id, project_id, actor_id, actor_email, actor_role, actor_kind,
               action, resource_type, resource_id, resource_name,
               outcome, metadata, ip::text AS ip, user_agent, trace_id,
               created_at

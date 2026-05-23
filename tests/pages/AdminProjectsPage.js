@@ -10,19 +10,31 @@ export class AdminProjectsPage {
 
   async open() {
     await this.page.goto("/admin?view=projects");
-    // The page header text "Projects" lands in a <h2>/<h3> as soon
-    // as the panel mounts. We wait on it before driving the form.
-    await this.page.getByRole("heading", { name: /projects/i }).first().waitFor();
+    // AdminPage renders ProjectsPage inside its panel without an
+    // explicit <h1>/<h2> "Projects" heading — the section is
+    // identified by the sidebar item. Wait for the active sidebar
+    // item to highlight as a stable "panel is mounted" signal.
+    await this.page.locator(".admin-active").first().waitFor({ state: "visible" });
   }
 
-  /** Click the toolbar's "New project" button — kicks open the dialog. */
+  /** Click the toolbar's "New project" button — kicks open the dialog.
+   *  Also matches a bare "+" icon button if that's all the page renders. */
   async openNewProjectDialog() {
-    await this.page.getByRole("button", { name: /new\s+project|create\s+project|add\s+project/i }).first().click();
+    const btn = this.page
+      .getByRole("button", { name: /new\s+project|create\s+project|add\s+project|new/i })
+      .or(this.page.locator('button:has(i.q-icon:has-text("add"))'))
+      .first();
+    await btn.waitFor({ state: "visible", timeout: 10_000 });
+    await btn.click();
   }
 
   /** Inside the new-project dialog. */
   async fillProjectName(name) {
-    await this.page.getByLabel(/^name$/i).first().fill(name);
+    
+    await this.page.locator('.project-name-input').waitFor();
+await this.page.locator('.project-name-input').fill(name);
+
+    //await this.page.getByLabel(/^name$/i).first().fill(name);
   }
 
   async confirmCreate() {

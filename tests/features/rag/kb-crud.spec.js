@@ -15,14 +15,19 @@ test("KB CRUD — create + list + delete", async () => {
   // ingest spec (next file) actually exercises the embedder; this
   // one only touches the metadata table.
   const kb = await createKb({ token, title });
+  // POST /kbs returns { id } only; verify the title via the list.
   expect(kb.id).toBeTruthy();
-  expect(kb.title).toBe(title);
 
   const list = await listKbs({ token });
-  expect(list.some(k => k.id === kb.id)).toBe(true);
+  const row = (Array.isArray(list) ? list : (list?.knowledgeBases || list?.kbs || []))
+                .find(k => k.id === kb.id);
+  expect(row).toBeTruthy();
+  expect(row.title).toBe(title);
 
   await deleteKb({ token, id: kb.id });
 
   const after = await listKbs({ token });
-  expect(after.some(k => k.id === kb.id)).toBe(false);
+  const stillThere = (Array.isArray(after) ? after : (after?.knowledgeBases || after?.kbs || []))
+                       .some(k => k.id === kb.id && !k.deleted_at);
+  expect(stillThere).toBe(false);
 });

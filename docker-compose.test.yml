@@ -161,7 +161,13 @@ services:
       # Must match api-test's CONFIG_SECRET — both processes need the
       # same KEK to encrypt/decrypt the same configs row.
       CONFIG_SECRET: test-config-secret-not-for-prod-32-chars
-      LOG_LEVEL: warn
+      # LOG_LEVEL was 'warn', which silently filtered the executor's
+      # "execution start" / "execution end" trace lines + the HITL
+      # diagnostic logs added in worker.js. Tests can't see what the
+      # worker is doing without these. 'info' lets us follow a job
+      # from pickup → executor return → row UPDATE without having to
+      # patch source each debug cycle.
+      LOG_LEVEL: info
       RATE_LIMIT_ENABLED: "false"
       # Seed an admin so the Playwright suite can log in immediately.
       # First worker boot picks these up via runIfRequested(); reruns

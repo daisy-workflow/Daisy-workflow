@@ -111,6 +111,8 @@ function onKeydown(e) {
           color="primary"
           icon-right="play_arrow"
           label="Run"
+          class="run-button"
+          data-testid="run-dialog-submit"
           :disable="!parsed.ok"
           @click="submit"
         />

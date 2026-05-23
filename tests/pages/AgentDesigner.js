@@ -24,17 +24,23 @@ export class AgentDesigner {
   }
 
   async setPrompt(text) {
-    // The system-prompt field is a textarea labelled "System prompt"
-    // or just "Prompt" depending on which template binding is on.
-    // Match both.
-    const input = this.page.getByLabel(/^(system\s+)?prompt$/i).first();
+    // AgentDesigner.vue label is dynamic:
+    //   - "System prompt"        when no template is bound (default)
+    //   - "Fallback prompt (...)" when a prompt_template_id is set
+    // Match either by starts-with — Quasar's <q-input :label>
+    // becomes the input's accessible name.
+   /* const input = this.page
+      .getByLabel(/^system prompt$|^fallback prompt/i)
+      .first();*/
+      const input = this.page.locator(".markdown-editor textarea").first();
     await input.click({ clickCount: 3 });
     await input.fill(text);
   }
 
   /** Save — the toolbar's primary action button. */
   async save() {
-    await this.page.getByRole("button", { name: /^save$/i }).first().click();
+    this.page.locator(".save-button").first().click();
+    //await this.page.getByRole("button", { name: /^save$/i }).first().click();
   }
 
   /** The Quasar notify banner appears for a few seconds after save.

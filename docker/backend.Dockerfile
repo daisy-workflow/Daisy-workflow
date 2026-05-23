@@ -19,7 +19,6 @@ WORKDIR /app
 # Install dependencies. We don't run npm test here — that's CI's job.
 COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev
-
 # Copy the application source.
 #
 # --chmod=0755 forces world-readable + dir-traversable perms because

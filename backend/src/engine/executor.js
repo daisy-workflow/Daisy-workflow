@@ -422,13 +422,19 @@ export async function executeDag(parsed, opts = {}) {
         attempts = 1;
       } else {
         const r = await attemptOnce(resolvedInputs);
+        // Capture attempts up-front so the catch path below still has
+        // it on the recordOutcome call when r.ok=false. Without this,
+        // a failed node's node_states row ended up with attempts=NULL
+        // and consumers (InstanceViewer, retries-and-errors spec)
+        // couldn't tell whether the retry budget was exercised at all.
+        attempts = r.attempts;
         if (!r.ok) throw r.error;
         output = r.output;
-        attempts = r.attempts;
       }
     } catch (e) {
       recordOutcome(node.name, {
         status: NodeStatus.FAILED, error: e.message,
+        attempts,                                 // see capture above
         startedAt, finishedAt: new Date().toISOString(),
       });
       emit("node:status", { node: node.name, status: NodeStatus.FAILED, error: e.message });
