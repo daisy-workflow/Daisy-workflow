@@ -5,6 +5,10 @@ Daisy AI Orchestrator is an AI orchestration platform built around a visual edit
 
 See the [Wiki](https://github.com/vivekg13186/Daisy-workflow/wiki) for full documentation.
 
+# Architecture
+ 
+ ![arch](daisy-arch.png)
+
 ## Quick start (Docker)
 
 The fastest way to try Daisy is to pull the pre-built images from Docker Hub and bring the whole stack up with one command.
