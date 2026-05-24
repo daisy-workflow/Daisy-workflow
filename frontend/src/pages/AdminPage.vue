@@ -221,26 +221,26 @@ function goHome() { router.push({ name: "home" }); }
 
 <style scoped>
 /*
-  Light-themed sidebar in the same style as HomePage's activity bar —
-  the visual language stays consistent across "Workflows / Triggers /
-  Instances" on the home page and "Admin > …" here.
+  Admin sidebar — same visual language as HomePage's activity bar.
+  Every colour is a CSS variable from styles.css so dark mode (or any
+  brand swap) flows through without per-file edits.
 */
 .admin-sidebar {
-  background: #ffffff;
-  border-right: 1px solid #e2e8f0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
 }
 .admin-sidebar :deep(.q-item) {
   border-radius: 6px;
   margin: 2px 6px;
-  color: #475569;
+  color: var(--text-muted);
 }
 .admin-sidebar :deep(.q-item:hover) {
-  color: #0f172a;
-  background: rgba(15, 23, 42, 0.04);
+  color: var(--text);
+  background: var(--hover-bg);
 }
 .admin-sidebar :deep(.admin-active) {
-  color: #2f6df3;
-  background: rgba(47, 109, 243, 0.10);
+  color: var(--primary);
+  background: var(--primary-soft);
 }
 .admin-sidebar :deep(.admin-active::before) {
   content: "";
@@ -249,7 +249,7 @@ function goHome() { router.push({ name: "home" }); }
   top: 8px;
   bottom: 8px;
   width: 3px;
-  background: #2f6df3;
+  background: var(--primary);
   border-radius: 0 2px 2px 0;
 }
 </style>

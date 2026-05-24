@@ -69,6 +69,11 @@
   --q-warning:     var(--warning);
   --q-info:        var(--info);
 
+  /* Subtle "row hover" tint used by the admin sidebar + home rail.
+     Dark on light here; the dark-mode block redefines as light on dark
+     so the hover stays equally visible. */
+  --hover-bg:      rgba(15, 23, 42, 0.04);
+
   color-scheme: light;
 }
 
@@ -80,30 +85,41 @@
  * exists as long as they use var(--…) instead of literal colours.
  * ──────────────────────────────────────────────────────────────────────── */
 html[data-theme="dark"] {
-  --bg:           #0f172a;
-  --surface:      #1e293b;
-  --surface-2:    #15213a;
+  /* Neutral-gray palette — no blue/cool cast. Picked from Tailwind's
+     `neutral` family so the tones step evenly from page background
+     up through surface, border, text. If the room is dim and the
+     palette ever feels TOO flat, nudge `--bg` toward #0d0d0d and
+     `--surface` toward #1c1c1c for a hair more contrast.            */
+  --bg:           #141414;   /* page background — near-black, no hue */
+  --surface:      #1f1f1f;   /* cards, panels, headers */
+  --surface-2:    #262626;   /* nested / muted surfaces */
 
-  --border:       #334155;
-  --border-strong:#475569;
+  --border:       #3a3a3a;   /* hairline borders */
+  --border-strong:#525252;   /* stronger separators */
 
-  --text:         #e2e8f0;
-  --text-muted:   #94a3b8;
-  --text-soft:    #64748b;
+  --text:         #e5e5e5;   /* primary text — gentle off-white */
+  --text-muted:   #a3a3a3;   /* secondary text */
+  --text-soft:    #737373;   /* tertiary / disabled */
 
-  --primary:      #6aa1ff;
-  --primary-soft: #1e3a8a;
+  /* Brand + status keep their hue so semantics still read at a
+     glance — only the neutrals are de-tinted. */
+  --primary:      #7da3ff;   /* slightly lighter brand for contrast on gray */
+  --primary-soft: #2a2f3d;   /* desaturated tint that fits the gray surface */
   --success:      #4ade80;
-  --success-soft: #14532d;
+  --success-soft: #1f3a25;
   --warning:      #fbbf24;
-  --warning-soft: #78350f;
+  --warning-soft: #3d2f10;
   --danger:       #f87171;
-  --danger-soft:  #7f1d1d;
-  --info:         #38bdf8;
-  --info-soft:    #075985;
+  --danger-soft:  #3d1f1f;
+  --info:         #60a5fa;
+  --info-soft:    #1f2c3d;
 
-  --shadow-sm:    0 1px 2px rgba(0, 0, 0, 0.35);
-  --shadow:       0 1px 3px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-sm:    0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow:       0 1px 3px rgba(0, 0, 0, 0.55), 0 1px 2px rgba(0, 0, 0, 0.45);
+
+  /* Hover tint flips light-on-dark so the rail/sidebar hover is still
+     visible against the gray surface. */
+  --hover-bg:     rgba(255, 255, 255, 0.06);
 
   color-scheme: dark;
 }

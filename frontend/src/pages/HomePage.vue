@@ -913,12 +913,13 @@ function notify(message, type = "positive") {
 .ask-agent-btn:hover { background: var(--primary-soft); filter: brightness(0.97); }
 
 /*
-  Light-themed activity bar. Surface tones match the rest of the app
-  (light Quasar theme + brand primary #2f6df3 from main.js).
+  Activity bar — colours sourced from design tokens (styles.css) so
+  light + dark themes both look right, and a brand swap flows through
+  here without per-file edits.
 */
 .activity-bar {
-  background: #ffffff;
-  border-right: 1px solid #e2e8f0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
 }
 .rail {
   display: flex;
@@ -931,17 +932,17 @@ function notify(message, type = "positive") {
   width: 48px;
   height: 48px;
   border-radius: 8px;
-  color: #64748b;            /* slate-500 — readable but recedes */
+  color: var(--text-muted);    /* readable but recedes */
 }
 .rail-btn:hover {
-  color: #0f172a;            /* slate-900 on hover */
-  background: rgba(15, 23, 42, 0.04);
+  color: var(--text);
+  background: var(--hover-bg);
 }
 .rail-btn.active {
-  /* Tinted in primary so the active state pops against the white
-     rail without going as heavy as a filled chip. */
-  color: #2f6df3;
-  background: rgba(47, 109, 243, 0.10);
+  /* Tinted in primary so the active state pops against the rail
+     without going as heavy as a filled chip. */
+  color: var(--primary);
+  background: var(--primary-soft);
   position: relative;
 }
 .rail-btn.active::before {
@@ -951,7 +952,7 @@ function notify(message, type = "positive") {
   top: 8px;
   bottom: 8px;
   width: 3px;
-  background: #2f6df3;
+  background: var(--primary);
   border-radius: 0 2px 2px 0;
 }
 .home-content {
