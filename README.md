@@ -1,3 +1,6 @@
+> [!NOTE]
+> Transforming Daisy into a more AI-centric workflow. A new release is currently in progress.
+
 Daisy AI Orchestrator is an AI orchestration platform built around a visual editor and a typed DSL. The runtime executes directed acyclic graphs (DAGs) of plugin actions, supports parallel execution with retries and batch fan-out, evaluates FEEL expressions in user-supplied placeholders, and protects credentials with KMS envelope encryption. The platform exposes both in-process and HTTP-transport plugins, supports OIDC authentication, and emits audit, observability, and rate-limit signals suitable for production deployments.
 
 See the [Wiki](https://github.com/vivekg13186/Daisy-workflow/wiki) for full documentation.

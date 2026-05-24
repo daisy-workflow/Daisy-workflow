@@ -45,7 +45,7 @@
            view, Instances, Running triggers). Quasar's q-table still
            shows the title + search even without these. -->
       <template v-if="!readOnly">
-        <q-btn icon="add" flat dense @click="onAdd" size="sm">
+        <q-btn icon="add" flat dense @click="onAdd" size="sm" data-testid="add-button">
           <q-tooltip>Add new item</q-tooltip>
         </q-btn>
 
