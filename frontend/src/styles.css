@@ -149,7 +149,9 @@ html, body, #app {
 .app-toolbar {
   min-height: 52px;
   padding: 0 16px;
+    background: var(--surface) !important;
 }
+
 .app-toolbar .q-toolbar-title {
   font-weight: 600;
   font-size: 14.5px;
@@ -362,4 +364,8 @@ pre.cell-pre {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   border-bottom: 1px solid var(--border);
+}
+
+.q-card .app-toolbar {
+padding-right: 10px !important;
 }

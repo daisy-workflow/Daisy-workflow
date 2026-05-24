@@ -127,6 +127,7 @@
             <q-toolbar class="app-toolbar">
               <q-icon name="description" class="q-mr-sm" />
               <q-toolbar-title>Documents</q-toolbar-title>
+              <q-space/>
               <q-btn flat dense icon="refresh" @click="reloadDocs" />
             </q-toolbar>
             <q-separator />
@@ -171,7 +172,7 @@
               <q-toolbar-title>Add a document</q-toolbar-title>
             </q-toolbar>
             <q-separator />
-            <q-tabs v-model="addTab" dense align="left" class="bg-grey-2">
+            <q-tabs v-model="addTab" dense  align="left" >
               <q-tab name="upload"  no-caps label="Upload file" icon="upload_file" />
               <q-tab name="url"     no-caps label="Fetch URL"   icon="link" />
               <q-tab name="text"    no-caps label="Paste text"  icon="edit_note" />
@@ -702,5 +703,5 @@ onMounted(reload);
   padding: 8px;
   margin-top: 4px;
 }
-.app-toolbar { background: #f5f5f5; min-height: 36px; }
+.app-toolbar { min-height: 36px; }
 </style>

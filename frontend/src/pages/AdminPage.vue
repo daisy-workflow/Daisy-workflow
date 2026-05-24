@@ -48,8 +48,9 @@
       bordered persistent
       class="admin-sidebar"
     >
-      <q-list dense>
-        <q-item-label header class="text-caption">Admin</q-item-label>
+    <q-scroll-area class="fit">
+      <q-list  >
+        
         <q-item
           v-for="item in visibleSections"
           :key="item.key"
@@ -66,6 +67,7 @@
           </q-item-section>
         </q-item>
       </q-list>
+      </q-scroll-area>
     </q-drawer>
 
     <q-page-container>

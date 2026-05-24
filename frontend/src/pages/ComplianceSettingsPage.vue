@@ -341,5 +341,5 @@ onMounted(async () => {
 
 <style scoped>
 .cs-page .page-header { display: flex; align-items: center; }
-.app-toolbar { background: #f5f5f5; min-height: 36px; }
+.app-toolbar { min-height: 36px; padding-right:0px!important; }
 </style>
