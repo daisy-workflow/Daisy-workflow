@@ -7,7 +7,7 @@ See the [Wiki](https://github.com/vivekg13186/Daisy-workflow/wiki) for full docu
 
 # Architecture
  
- ![arch](daisy-arch.png)
+ ![arch](daisy-arch.jpg)
 
 ## Quick start (Docker)
 
