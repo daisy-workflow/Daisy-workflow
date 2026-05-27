@@ -5,7 +5,7 @@ Daisy AI Orchestrator is an AI orchestration platform built around a visual edit
 
 See the [Wiki](https://github.com/vivekg13186/Daisy-workflow/wiki) for full documentation.
 
-# Architecture
+# Architecture 
  
  ![arch](daisy-arch.jpg)
 
